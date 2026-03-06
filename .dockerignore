@@ -1,0 +1,10 @@
+.git
+.env
+.env.*
+__pycache__
+*.pyc
+.venv
+venv
+*.md
+.cursor
+.plans
