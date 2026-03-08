@@ -364,6 +364,27 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     user_perms = None if main_admin else sub_perms
     data = query.data
 
+    if data and data.startswith(CB_CANCEL_JOB_PREFIX):
+        if not _user_has_permission(user_perms, PERM_VIEW_SCHEDULED_TASKS):
+            return ConversationHandler.END
+        try:
+            job_id = int(data[len(CB_CANCEL_JOB_PREFIX):])
+            SessionLocal = context.bot_data["SessionLocal"]
+            with get_db_session(SessionLocal) as session:
+                repo = VideoJobRepository(session)
+                job = repo.get_by_id(job_id)
+                if job and job.status == "pending":
+                    job.status = "cancelled"
+                    repo.update(job)
+                    await query.answer("Job cancelled")
+                    await _show_scheduled_tasks(query, context)
+                else:
+                    await query.answer("Job not found or already processed", show_alert=True)
+        except (ValueError, Exception) as e:
+            logger.exception("Cancel job failed: %s", e)
+            await query.answer("Could not cancel job", show_alert=True)
+        return ConversationHandler.END
+
     if data == CB_BACK:
         await query.edit_message_text(
             "Hey boss! 👋 What would you like to do?",
