@@ -111,6 +111,9 @@ class YtDlpDownloader:
             "logger": logger,
             "extract_flat": False,
             **({"proxy": self.proxy} if self.proxy else {}),
+            # YouTube signature solving requires a JS runtime. Node.js works on Termux/Android.
+            # Deno is default but often not installed; node must be explicitly enabled.
+            "js_runtimes": "node",
             # Avoid web client - triggers "Sign in to confirm" on datacenter/VPS IPs.
             # Use tv/android clients (no PO token required). tv_embedded first when we have cookies.
             "extractor_args": {

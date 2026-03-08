@@ -12,6 +12,7 @@ pkg update -y && pkg install -y \
     git \
     binutils \
     rust \
+    nodejs \
     python-numpy \
     python-pillow \
     python-cryptography \
