@@ -18,11 +18,18 @@ def _table_has_column(conn, table: str, column: str) -> bool:
 
 def create_engine_and_session(database_url: str):
     """Create engine and session factory."""
+    connect_args = {"check_same_thread": False}
+    if database_url.startswith("sqlite"):
+        connect_args["timeout"] = 30  # Wait up to 30s for lock (avoids "database is locked")
     engine = create_engine(
         database_url,
-        connect_args={"check_same_thread": False},
+        connect_args=connect_args,
         pool_pre_ping=True,
     )
+    if database_url.startswith("sqlite"):
+        with engine.connect() as conn:
+            conn.execute(text("PRAGMA journal_mode=WAL"))
+            conn.commit()
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     return engine, SessionLocal
 

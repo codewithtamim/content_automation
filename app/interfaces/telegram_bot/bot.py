@@ -108,6 +108,7 @@ CB_UPDATE_WM_PREFIX = "upd_wm_"
 CB_REMOVE_WM_PREFIX = "rm_wm_"
 CB_REMOVE_DEAD_VIDEOS = "remove_dead_videos"
 CB_RDV_ACCOUNT_PREFIX = "rdv_acc_"
+CB_RETRY_JOB_PREFIX = "retry_job_"
 CB_BACK = "back"
 CB_PERM_FULL = "perm_full"
 CB_PERM_UPLOAD = "perm_upload"
@@ -1415,6 +1416,33 @@ async def start_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     return ConversationHandler.END
 
 
+async def retry_job_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle Retry button on failed job notifications."""
+    query = update.callback_query
+    if not query or not query.data:
+        return
+    try:
+        job_id = int(query.data[len(CB_RETRY_JOB_PREFIX):])
+        SessionLocal = context.bot_data["SessionLocal"]
+        with get_db_session(SessionLocal) as session:
+            repo = VideoJobRepository(session)
+            job = repo.get_by_id(job_id)
+            if job and job.status == "failed":
+                job.status = "pending"
+                job.error_message = None
+                repo.update(job)
+                await query.answer("Job queued for retry")
+                await query.edit_message_text(
+                    query.message.text + "\n\n✓ Queued for retry.",
+                    reply_markup=None,
+                )
+            else:
+                await query.answer("Job not found or already retried", show_alert=True)
+    except (ValueError, Exception) as e:
+        logger.exception("Retry job failed: %s", e)
+        await query.answer("Could not retry job", show_alert=True)
+
+
 async def callback_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Fallback: button click while in a flow - reset to main menu."""
     query = update.callback_query
@@ -1528,6 +1556,10 @@ def create_application(
         ],
     )
 
+    app.add_handler(
+        CallbackQueryHandler(retry_job_callback, pattern=f"^{CB_RETRY_JOB_PREFIX}"),
+        group=0,
+    )
     app.add_handler(conv_handler)
     app.add_handler(CommandHandler("start", start_command))
     app.add_error_handler(_error_handler)

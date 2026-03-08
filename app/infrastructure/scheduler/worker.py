@@ -47,7 +47,8 @@ def _notify_admin_job_failed(
         for x in ("sign in to confirm", "cookies", "challenge_required", "consent_required")
     ):
         msg += "\n\nTip: Upload fresh YouTube cookies via Manage credentials → Upload YouTube cookies"
-    notify_admin(bot_token, admin_chat_id, msg)
+    reply_markup = {"inline_keyboard": [[{"text": "Retry", "callback_data": f"retry_job_{job_id}"}]]}
+    notify_admin(bot_token, admin_chat_id, msg, reply_markup=reply_markup)
 
 
 def _notify_admin_job_completed(
@@ -114,10 +115,14 @@ def run_worker(
                 now = datetime.now(timezone.utc)
                 pending = repo.get_pending_jobs(now)
 
-                for job in pending:
-                    if stop_event.is_set():
-                        break
-                    try:
+            for job in pending:
+                if stop_event.is_set():
+                    break
+                try:
+                    with get_db_session(SessionLocal) as session:
+                        repo = VideoJobRepository(session)
+                        insta_repo = InstagramAccountRepository(session)
+
                         if not job.instagram_account_id:
                             err = "No Instagram account configured. Re-create the job."
                             logger.error(
@@ -190,13 +195,23 @@ def run_worker(
                             telegram_bot_token,
                         )
                         time.sleep(UPLOAD_DELAY_SECONDS)
-                    except Exception as e:
-                        logger.exception("Job %s failed: %s", job.id, e)
-                        _notify_admin_job_failed(
-                            job.id, job.original_url, str(e),
-                            job.submitted_by_username,
-                            admin_telegram_chat_id, telegram_bot_token,
-                        )
+                except Exception as e:
+                    logger.exception("Job %s failed: %s", job.id, e)
+                    try:
+                        with get_db_session(SessionLocal) as session:
+                            repo = VideoJobRepository(session)
+                            failed_job = repo.get_by_id(job.id)
+                            if failed_job:
+                                failed_job.status = "failed"
+                                failed_job.error_message = str(e)
+                                repo.update(failed_job)
+                    except Exception as db_err:
+                        logger.exception("Could not update job %s to failed: %s", job.id, db_err)
+                    _notify_admin_job_failed(
+                        job.id, job.original_url, str(e),
+                        job.submitted_by_username,
+                        admin_telegram_chat_id, telegram_bot_token,
+                    )
 
         except Exception as e:
             logger.exception("Worker iteration failed: %s", e)

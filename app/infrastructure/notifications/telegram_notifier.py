@@ -11,6 +11,7 @@ def notify_admin(
     bot_token: str,
     admin_chat_id: str,
     message: str,
+    reply_markup: dict | None = None,
 ) -> bool:
     """
     Send a message to the admin via Telegram.
@@ -19,6 +20,7 @@ def notify_admin(
         bot_token: Telegram bot token.
         admin_chat_id: Admin's Telegram chat ID.
         message: Message text to send.
+        reply_markup: Optional inline keyboard, e.g. {"inline_keyboard": [[{"text": "Retry", "callback_data": "retry_job_10"}]]}.
 
     Returns:
         True if sent successfully, False otherwise.
@@ -27,7 +29,10 @@ def notify_admin(
         logger.warning("Cannot notify admin: missing bot_token or admin_chat_id")
         return False
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    data = json.dumps({"chat_id": admin_chat_id, "text": message}).encode("utf-8")
+    payload = {"chat_id": admin_chat_id, "text": message}
+    if reply_markup:
+        payload["reply_markup"] = json.dumps(reply_markup)
+    data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         url,
         data=data,
