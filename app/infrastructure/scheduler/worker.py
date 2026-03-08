@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 
 from app.application.use_cases.process_job import process_job
 from app.infrastructure.ai.gemini_client import generate_metadata_with_failover
+from app.infrastructure.notifications.telegram_notifier import notify_admin
 from app.infrastructure.database.repository import (
     GeminiKeyRepository,
     InstagramAccountRepository,
@@ -22,12 +23,35 @@ POLL_INTERVAL_SECONDS = 60
 UPLOAD_DELAY_SECONDS = 30  # Delay between uploads to avoid rate limits
 
 
+def _notify_admin_job_failed(
+    job_id: int,
+    original_url: str,
+    error_message: str,
+    submitted_by_username: str | None,
+    admin_chat_id: str | None,
+    bot_token: str | None,
+) -> None:
+    """Notify admin via Telegram when a job fails."""
+    if not admin_chat_id or not bot_token:
+        return
+    submitter = f"@{submitted_by_username}" if submitted_by_username else "Unknown"
+    msg = (
+        f"Job {job_id} failed\n\n"
+        f"Submitted by: {submitter}\n"
+        f"URL: {original_url}\n\n"
+        f"Error: {error_message}"
+    )
+    notify_admin(bot_token, admin_chat_id, msg)
+
+
 def run_worker(
     SessionLocal,
     video_storage_path: str,
     gemini_model: str = "gemini-2.5-flash",
     yt_cookies_path: str = "cookies.txt",
     stop_event: threading.Event | None = None,
+    admin_telegram_chat_id: str | None = None,
+    telegram_bot_token: str | None = None,
 ) -> None:
     """
     Run the background worker loop.
@@ -61,31 +85,49 @@ def run_worker(
                         break
                     try:
                         if not job.instagram_account_id:
+                            err = "No Instagram account configured. Re-create the job."
                             logger.error(
                                 "Job %s has no Instagram account. Re-create the job with an account.",
                                 job.id,
                             )
                             job.status = "failed"
-                            job.error_message = "No Instagram account configured. Re-create the job."
+                            job.error_message = err
                             repo.update(job)
+                            _notify_admin_job_failed(
+                                job.id, job.original_url, err,
+                                job.submitted_by_username,
+                                admin_telegram_chat_id, telegram_bot_token,
+                            )
                             continue
 
                         account = insta_repo.get_by_id(job.instagram_account_id)
                         if not account:
+                            err = f"Instagram account {job.instagram_account_id} not found"
                             logger.error("Job %s: Instagram account %s not found", job.id, job.instagram_account_id)
                             job.status = "failed"
-                            job.error_message = f"Instagram account {job.instagram_account_id} not found"
+                            job.error_message = err
                             repo.update(job)
+                            _notify_admin_job_failed(
+                                job.id, job.original_url, err,
+                                job.submitted_by_username,
+                                admin_telegram_chat_id, telegram_bot_token,
+                            )
                             continue
 
                         username, password = account
                         instagram_uploader = InstagramUploader(username=username, password=password)
 
                         if not gemini_keys:
+                            err = "No Gemini API keys configured"
                             logger.error("No Gemini API keys configured. Add keys via bot.")
                             job.status = "failed"
-                            job.error_message = "No Gemini API keys configured"
+                            job.error_message = err
                             repo.update(job)
+                            _notify_admin_job_failed(
+                                job.id, job.original_url, err,
+                                job.submitted_by_username,
+                                admin_telegram_chat_id, telegram_bot_token,
+                            )
                             continue
 
                         logger.info("Processing job %s: %s", job.id, job.original_url)
@@ -107,6 +149,11 @@ def run_worker(
                         time.sleep(UPLOAD_DELAY_SECONDS)
                     except Exception as e:
                         logger.exception("Job %s failed: %s", job.id, e)
+                        _notify_admin_job_failed(
+                            job.id, job.original_url, str(e),
+                            job.submitted_by_username,
+                            admin_telegram_chat_id, telegram_bot_token,
+                        )
 
         except Exception as e:
             logger.exception("Worker iteration failed: %s", e)

@@ -30,6 +30,7 @@ def _model_to_entity(model: VideoJobModel) -> VideoJob:
         generated_title=model.generated_title,
         generated_tags=list(model.generated_tags) if model.generated_tags else None,
         error_message=model.error_message,
+        submitted_by_username=model.submitted_by_username,
         created_at=model.created_at,
         updated_at=model.updated_at,
     )
@@ -50,6 +51,7 @@ def _entity_to_model(entity: VideoJob) -> VideoJobModel:
         generated_title=entity.generated_title,
         generated_tags=entity.generated_tags,
         error_message=entity.error_message,
+        submitted_by_username=entity.submitted_by_username,
         created_at=entity.created_at,
         updated_at=entity.updated_at,
     )
@@ -75,6 +77,7 @@ class VideoJobRepository:
             generated_title=job.generated_title,
             generated_tags=job.generated_tags,
             error_message=job.error_message,
+            submitted_by_username=job.submitted_by_username,
         )
         self.session.add(model)
         self.session.flush()
@@ -99,6 +102,7 @@ class VideoJobRepository:
         model.generated_title = job.generated_title
         model.generated_tags = job.generated_tags
         model.error_message = job.error_message
+        model.submitted_by_username = job.submitted_by_username
         model.updated_at = datetime.now(timezone.utc)
         self.session.flush()
         return _model_to_entity(model)

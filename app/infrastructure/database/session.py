@@ -52,6 +52,20 @@ def init_db(engine) -> None:
             )
             conn.commit()
 
+    # Migration: add submitted_by_username to video_jobs if missing (for existing DBs)
+    with engine.connect() as conn:
+        result = conn.execute(
+            text(
+                """
+                SELECT column_name FROM information_schema.columns
+                WHERE table_name = 'video_jobs' AND column_name = 'submitted_by_username'
+                """
+            )
+        )
+        if result.fetchone() is None:
+            conn.execute(text("ALTER TABLE video_jobs ADD COLUMN submitted_by_username VARCHAR(255)"))
+            conn.commit()
+
     # Migration: add permissions to sub_admins if missing (for existing DBs)
     with engine.connect() as conn:
         result = conn.execute(

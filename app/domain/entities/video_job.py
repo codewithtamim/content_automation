@@ -28,5 +28,6 @@ class VideoJob:
     generated_title: Optional[str]
     generated_tags: Optional[list[str]]
     error_message: Optional[str]
+    submitted_by_username: Optional[str]
     created_at: datetime
     updated_at: datetime

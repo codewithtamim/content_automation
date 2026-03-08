@@ -30,6 +30,7 @@ def create_job(
     platform: str = "instagram",
     schedule_time: Optional[datetime] = None,
     instagram_account_id: Optional[int] = None,
+    submitted_by_username: Optional[str] = None,
 ) -> list[int]:
     """
     Create video jobs for each URL.
@@ -60,6 +61,7 @@ def create_job(
             generated_title=None,
             generated_tags=None,
             error_message=None,
+            submitted_by_username=submitted_by_username,
             created_at=now,
             updated_at=now,
         )

@@ -19,6 +19,10 @@ def _is_format_unavailable_error(error: Exception) -> bool:
         "format is not available",
         "requested format not available",
         "no video formats found",
+        "no suitable format",
+        "unable to download",
+        "no formats found",
+        "format not available",
     )
     return any(needle in err_msg for needle in needles)
 
@@ -72,11 +76,12 @@ class YtDlpDownloader:
         output_template = str(self.storage_path / f"{job_id}.%(ext)s")
 
         base_opts = {
-            "merge_output_format": "mp4",  # Prefer mp4 for Instagram
+            "merge_output_format": "mp4",
             "outtmpl": output_template,
             "quiet": True,
             "no_warnings": True,
             "extract_flat": False,
+            "check_formats": False,
         }
         if self.cookies_path and self.cookies_path.exists() and self.cookies_path.stat().st_size > 0:
             base_opts["cookiefile"] = str(self.cookies_path)
@@ -87,17 +92,19 @@ class YtDlpDownloader:
             extracted_info["title"] = info.get("title")
             extracted_info["tags"] = info.get("tags") or []
 
-        # (format, extractor_args) - try in order; format=None means omit format key
+        # (format, extractor_args) — try in order; format=None means omit format key.
+        # Prioritise clients that do NOT require a PO (Proof-of-Origin) Token:
+        #   tv, web_embedded, android_vr
+        # Use modern format syntax: bv*+ba/b (allows muxed or split streams).
         retry_combinations = [
-            ("bestvideo+bestaudio/best", None),
-            ("best", None),
-            ("18", None),  # 360p single-file MP4
-            ("17", None),  # 144p single-file MP4
-            ("bestvideo+bestaudio/best", {"youtube": {"player_client": "web_safari"}}),
-            ("best", {"youtube": {"player_client": "web_safari"}}),
-            ("bestvideo+bestaudio/best", {"youtube": {"player_client": "android"}}),
-            ("best", {"youtube": {"player_client": "android"}}),
-            (None, None),  # No format - yt-dlp default
+            (None, None),
+            ("bv*+ba/b", None),
+            ("bv*+ba/b", {"youtube": {"player_client": "tv"}}),
+            ("b", {"youtube": {"player_client": "tv"}}),
+            ("bv*+ba/b", {"youtube": {"player_client": "web_embedded"}}),
+            ("b", {"youtube": {"player_client": "web_embedded"}}),
+            ("bv*+ba/b", {"youtube": {"player_client": "android_vr"}}),
+            ("18", None),  # 360p single-file MP4 last resort
         ]
 
         last_error = None

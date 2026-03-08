@@ -716,10 +716,15 @@ async def upload_account_picked(update: Update, context: ContextTypes.DEFAULT_TY
         return ConversationHandler.END
     acc_id = int(data[len(CB_ACCOUNT_PREFIX) :])
     urls = context.user_data.get("urls", [])
+    user = update.effective_user
+    submitted_by = (user.username or f"user_{user.id}") if user else None
     SessionLocal = context.bot_data["SessionLocal"]
     with get_db_session(SessionLocal) as session:
         repo = VideoJobRepository(session)
-        job_ids = create_job(repo, urls, schedule_time=None, instagram_account_id=acc_id)
+        job_ids = create_job(
+            repo, urls, schedule_time=None, instagram_account_id=acc_id,
+            submitted_by_username=submitted_by,
+        )
     await query.edit_message_text(
         f"Uploaded boss! 🎬 {len(job_ids)} video(s) queued – they'll be going live on Instagram shortly.\n\nJob IDs: {job_ids}"
     )
@@ -802,12 +807,15 @@ async def schedule_time_received(update: Update, context: ContextTypes.DEFAULT_T
 
     urls = context.user_data.get("urls", [])
     instagram_account_id = context.user_data.get("instagram_account_id")
+    user = update.effective_user
+    submitted_by = (user.username or f"user_{user.id}") if user else None
     SessionLocal = context.bot_data["SessionLocal"]
 
     with get_db_session(SessionLocal) as session:
         repo = VideoJobRepository(session)
         job_ids = create_job(
-            repo, urls, schedule_time=schedule_time, instagram_account_id=instagram_account_id
+            repo, urls, schedule_time=schedule_time, instagram_account_id=instagram_account_id,
+            submitted_by_username=submitted_by,
         )
 
     bd_time = schedule_time.astimezone(BANGLADESH_TZ)
