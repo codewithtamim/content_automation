@@ -83,12 +83,14 @@ class YtDlpDownloader:
             "noplaylist": True,
             "logger": logger,
         }
+
         if (
             self.cookies_path
             and self.cookies_path.exists()
             and self.cookies_path.stat().st_size > 0
         ):
             opts["cookiefile"] = str(self.cookies_path)
+
         if self.proxy:
             opts["proxy"] = self.proxy
 
