@@ -69,6 +69,9 @@ fi
 # ── Data directories ─────────────────────────────────────────────────
 mkdir -p data
 
+# ── Clear bytecode cache (force fresh run) ────────────────────────────
+find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+
 # ── Run ──────────────────────────────────────────────────────────────
 echo "Starting bot..."
 PYTHONPATH=. python -m app.main

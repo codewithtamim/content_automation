@@ -69,6 +69,9 @@ if [ -f "data/app.pid" ]; then
     rm -f data/app.pid
 fi
 
+# ── Clear bytecode cache (force fresh run) ────────────────────────────
+find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+
 # ── Run in background ────────────────────────────────────────────────
 echo "Starting bot in background..."
 nohup bash -c "source venv/bin/activate && PYTHONPATH=. python -m app.main" >> data/app.log 2>&1 &
