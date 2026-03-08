@@ -66,6 +66,12 @@ class YtDlpDownloader:
             "quiet": True,
             "no_warnings": True,
             "extract_flat": False,
+            # Prefer clients that don't require PO Token (avoids challenge_required)
+            "extractor_args": {
+                "youtube": {
+                    "player_client": ["tv_embedded", "tv", "tv_simply", "android_vr", "android"],
+                },
+            },
         }
         if self.cookies_path and self.cookies_path.exists() and self.cookies_path.stat().st_size > 0:
             ydl_opts["cookiefile"] = str(self.cookies_path)

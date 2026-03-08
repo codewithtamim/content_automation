@@ -42,7 +42,10 @@ def _notify_admin_job_failed(
         f"URL: {original_url}\n\n"
         f"Error: {error_message}"
     )
-    if "sign in to confirm" in error_message.lower() or "cookies" in error_message.lower():
+    if any(
+        x in error_message.lower()
+        for x in ("sign in to confirm", "cookies", "challenge_required")
+    ):
         msg += "\n\nTip: Upload fresh YouTube cookies via Manage credentials → Upload YouTube cookies"
     notify_admin(bot_token, admin_chat_id, msg)
 

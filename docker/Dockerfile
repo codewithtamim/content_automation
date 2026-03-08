@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 # Install system dependencies: ffmpeg + Deno (required by yt-dlp for YouTube format extraction)
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -17,8 +17,9 @@ WORKDIR /app
 # Copy requirements first for layer caching
 COPY requirements.txt .
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Upgrade pip and install Python dependencies
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY . .
