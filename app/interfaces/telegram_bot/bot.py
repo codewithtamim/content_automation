@@ -726,7 +726,7 @@ async def upload_account_picked(update: Update, context: ContextTypes.DEFAULT_TY
             submitted_by_username=submitted_by,
         )
     await query.edit_message_text(
-        f"Uploaded boss! 🎬 {len(job_ids)} video(s) queued – they'll be going live on Instagram shortly.\n\nJob IDs: {job_ids}"
+        f"Uploading! 🎬 {len(job_ids)} video(s) queued – they'll be going live on Instagram shortly.\n\nJob IDs: {job_ids}"
     )
     context.user_data.clear()
     return ConversationHandler.END

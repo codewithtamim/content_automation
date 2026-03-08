@@ -93,25 +93,31 @@ class YtDlpDownloader:
             extracted_info["tags"] = info.get("tags") or []
 
         # (format, extractor_args) — try in order; format=None means omit format key.
-        # Prioritise clients that do NOT require a PO (Proof-of-Origin) Token:
-        #   tv, web_embedded, android_vr
-        # Use modern format syntax: bv*+ba/b (allows muxed or split streams).
+        # Prioritise clients that do NOT require a PO (Proof-of-Origin) Token.
+        # Use "worst" as fallback — download whatever format is available, then convert to mp4.
         retry_combinations = [
             (None, None),
             ("bv*+ba/b", None),
+            ("b", None),
             ("bv*+ba/b", {"youtube": {"player_client": "tv"}}),
             ("b", {"youtube": {"player_client": "tv"}}),
+            ("worst", None),
+            ("worst", {"youtube": {"player_client": "tv"}}),
+            ("worstvideo+worstaudio/worst", None),
             ("bv*+ba/b", {"youtube": {"player_client": "web_embedded"}}),
             ("b", {"youtube": {"player_client": "web_embedded"}}),
+            ("worst", {"youtube": {"player_client": "web_embedded"}}),
             ("bv*+ba/b", {"youtube": {"player_client": "android_vr"}}),
-            ("18", None),  # 360p single-file MP4 last resort
+            ("worst", {"youtube": {"player_client": "android_vr"}}),
+            ("18", None),  # 360p single-file MP4
+            ("17", None),  # 144p single-file MP4 last resort
         ]
 
         last_error = None
         downloaded = False
         for fmt, extractor_args in retry_combinations:
             # Clean up any partial files from previous attempt
-            for ext in ["mp4", "webm", "mkv", "m4a"]:
+            for ext in ["mp4", "webm", "mkv", "m4a", "3gp", "flv"]:
                 (self.storage_path / f"{job_id}.{ext}").unlink(missing_ok=True)
 
             ydl_opts = dict(base_opts)
@@ -144,9 +150,9 @@ class YtDlpDownloader:
         if not downloaded and last_error is not None:
             raise last_error
 
-        # Find the downloaded file (yt-dlp may use different extensions)
+        # Find the downloaded file (yt-dlp may use different extensions; worst can yield 3gp, flv)
         output_path = None
-        for ext in ["mp4", "webm", "mkv", "m4a"]:
+        for ext in ["mp4", "webm", "mkv", "m4a", "3gp", "flv"]:
             candidate = self.storage_path / f"{job_id}.{ext}"
             if candidate.exists():
                 output_path = str(candidate)

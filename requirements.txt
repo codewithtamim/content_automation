@@ -1,8 +1,8 @@
 # Telegram Bot
 python-telegram-bot>=22.6
 
-# Video Download
-yt-dlp>=2026.3.3
+# Video Download (default extra includes yt-dlp-ejs for YouTube JS challenge solving)
+yt-dlp[default]>=2026.3.3
 
 # Social Media Uploaders
 instagrapi>=2.3.0
