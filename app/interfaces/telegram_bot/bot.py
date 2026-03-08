@@ -369,16 +369,19 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         try:
             job_id = int(data[len(CB_CANCEL_JOB_PREFIX):])
             SessionLocal = context.bot_data["SessionLocal"]
+            cancelled = False
             with get_db_session(SessionLocal) as session:
                 repo = VideoJobRepository(session)
                 job = repo.get_by_id(job_id)
                 if job and job.status == "pending":
                     job.status = "cancelled"
                     repo.update(job)
-                    await query.answer("Job cancelled")
-                    await _show_scheduled_tasks(query, context)
-                else:
-                    await query.answer("Job not found or already processed", show_alert=True)
+                    cancelled = True
+            if cancelled:
+                await query.answer("Job cancelled")
+                await _show_scheduled_tasks(query, context)
+            else:
+                await query.answer("Job not found or already processed", show_alert=True)
         except (ValueError, Exception) as e:
             logger.exception("Cancel job failed: %s", e)
             await query.answer("Could not cancel job", show_alert=True)
