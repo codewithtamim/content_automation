@@ -15,6 +15,8 @@ logger = logging.getLogger(__name__)
 
 # Global stop event for worker (set on SIGTERM)
 _worker_stop_event = threading.Event()
+# Pause worker briefly so bot can clear jobs (avoids DB lock)
+_worker_pause_event = threading.Event()
 
 
 def main() -> None:
@@ -41,6 +43,7 @@ def main() -> None:
         kwargs={
             "SessionLocal": SessionLocal,
             "engine": engine,
+            "pause_event": _worker_pause_event,
             "video_storage_path": settings.video_storage_path,
             "gemini_model": settings.gemini_model,
             "yt_cookies_path": settings.yt_cookies_path,
@@ -64,6 +67,7 @@ def main() -> None:
         admin_username=settings.admin_telegram_username,
         SessionLocal=SessionLocal,
         cookies_path=str(cookies_path),
+        worker_pause_event=_worker_pause_event,
     )
 
     def _sigterm_handler(signum, frame):

@@ -77,7 +77,8 @@ def _notify_admin_job_completed(
 def run_worker(
     SessionLocal,
     engine,
-    video_storage_path: str,
+    pause_event: threading.Event | None = None,
+    video_storage_path: str = "",
     gemini_model: str = "gemini-2.5-flash",
     yt_cookies_path: str = "cookies.txt",
     yt_proxy: str | None = None,
@@ -102,8 +103,12 @@ def run_worker(
 
     if stop_event is None:
         stop_event = threading.Event()
+    if pause_event is None:
+        pause_event = threading.Event()
 
     while not stop_event.is_set():
+        while pause_event.is_set():
+            time.sleep(0.5)
         try:
             with get_db_session(SessionLocal) as session:
                 repo = VideoJobRepository(session)

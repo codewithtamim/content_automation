@@ -1475,11 +1475,15 @@ async def clear_all_jobs_confirm_callback(update: Update, context: ContextTypes.
         await query.answer()
         return
     await query.answer("Clearing...")
+    pause_event = context.bot_data.get("worker_pause_event")
     try:
+        if pause_event:
+            pause_event.set()
+            await asyncio.sleep(2.5)
         SessionLocal = context.bot_data["SessionLocal"]
         count = await asyncio.wait_for(
             asyncio.to_thread(_delete_all_jobs_sync, SessionLocal),
-            timeout=30.0,
+            timeout=15.0,
         )
         await query.edit_message_text(
             f"Cleared {count} jobs. ✓",
@@ -1497,6 +1501,9 @@ async def clear_all_jobs_confirm_callback(update: Update, context: ContextTypes.
             f"Failed: {e}",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("← Back", callback_data=CB_VIEW)]]),
         )
+    finally:
+        if pause_event:
+            pause_event.clear()
 
 
 async def clear_all_jobs_show_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1611,6 +1618,7 @@ def create_application(
     admin_username: str,
     SessionLocal,
     cookies_path: str = "",
+    worker_pause_event=None,
 ) -> Application:
     """Create and configure the Telegram bot application."""
     app = (
@@ -1622,6 +1630,7 @@ def create_application(
     app.bot_data["admin_username"] = admin_username
     app.bot_data["SessionLocal"] = SessionLocal
     app.bot_data["cookies_path"] = cookies_path
+    app.bot_data["worker_pause_event"] = worker_pause_event
 
     # Conversation handler for upload, schedule, admin and credential management flows
     conv_handler = ConversationHandler(
