@@ -97,7 +97,8 @@ class YtDlpDownloader:
         has_user_cookies = cookies_to_use is not None and not is_temp
 
         ydl_opts = {
-            "format": "bestvideo+bestaudio/best",
+            # best first = most compatible (Shorts, age-restricted); fallback to merge for better quality
+            "format": "best/bestvideo+bestaudio",
             "merge_output_format": "mp4",
             "recodevideo": "mp4",
             "outtmpl": output_template,
