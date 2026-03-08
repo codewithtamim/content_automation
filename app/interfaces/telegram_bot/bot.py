@@ -34,6 +34,7 @@ from app.infrastructure.database.repository import (
     VideoJobRepository,
 )
 from app.infrastructure.database.session import get_db_session
+from app.infrastructure.instagram.remove_dead_videos import remove_dead_videos
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +85,7 @@ ADD_GEMINI_KEY = 20
 ADD_INSTA_USERNAME, ADD_INSTA_PASSWORD, ADD_INSTA_WATERMARK = 21, 22, 24
 ADD_COOKIES = 23
 UPDATE_INSTA_WATERMARK = 25
+REMOVE_DEAD_VIDEOS_PICK_ACCOUNT = 26
 
 # Callback data
 CB_UPLOAD = "upload"
@@ -104,6 +106,8 @@ CB_REMOVE_GEMINI_PREFIX = "rm_gem_"
 CB_REMOVE_INSTA_PREFIX = "rm_inst_"
 CB_UPDATE_WM_PREFIX = "upd_wm_"
 CB_REMOVE_WM_PREFIX = "rm_wm_"
+CB_REMOVE_DEAD_VIDEOS = "remove_dead_videos"
+CB_RDV_ACCOUNT_PREFIX = "rdv_acc_"
 CB_BACK = "back"
 CB_PERM_FULL = "perm_full"
 CB_PERM_UPLOAD = "perm_upload"
@@ -234,6 +238,7 @@ def _build_manage_creds_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("Upload YouTube cookies", callback_data=CB_ADD_COOKIES)],
         [InlineKeyboardButton("List Gemini keys", callback_data=CB_LIST_GEMINI)],
         [InlineKeyboardButton("List Instagram accounts", callback_data=CB_LIST_INSTA)],
+        [InlineKeyboardButton("Remove dead videos", callback_data=CB_REMOVE_DEAD_VIDEOS)],
         [InlineKeyboardButton("← Back", callback_data=CB_BACK)],
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -400,6 +405,29 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             return ConversationHandler.END
         await _show_instagram_accounts(query, context)
         return ConversationHandler.END
+    elif data == CB_REMOVE_DEAD_VIDEOS:
+        if not _user_has_permission(user_perms, PERM_MANAGE_CREDS):
+            return ConversationHandler.END
+        SessionLocal = context.bot_data["SessionLocal"]
+        with get_db_session(SessionLocal) as session:
+            repo = InstagramAccountRepository(session)
+            accounts = repo.list_all()
+        if not accounts:
+            await query.edit_message_text(
+                "No Instagram accounts yet. Add one first.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("← Back", callback_data=CB_BACK)]]),
+            )
+            return ConversationHandler.END
+        keyboard = [
+            [InlineKeyboardButton(f"@{username}", callback_data=f"{CB_RDV_ACCOUNT_PREFIX}{acc_id}")]
+            for acc_id, username, _wm in accounts
+        ]
+        keyboard.append([InlineKeyboardButton("← Back", callback_data=CB_BACK)])
+        await query.edit_message_text(
+            "Remove reels with 0 views (older than 1 day). Which account?",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+        return REMOVE_DEAD_VIDEOS_PICK_ACCOUNT
     elif data and data.startswith(CB_REMOVE_GEMINI_PREFIX):
         if not _user_has_permission(user_perms, PERM_MANAGE_CREDS):
             return ConversationHandler.END
@@ -974,6 +1002,68 @@ async def add_admin_permissions_callback(
     return ADD_ADMIN_PERMISSIONS
 
 
+async def remove_dead_videos_account_picked(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    """Handle account selection for Remove dead videos - run service and reply."""
+    admin_chat_id = context.bot_data["admin_chat_id"]
+    admin_username = context.bot_data["admin_username"]
+    sub_admin_usernames = _get_sub_admin_usernames(context)
+    if not is_admin(update, admin_chat_id, admin_username, sub_admin_usernames):
+        return ConversationHandler.END
+    main_admin, sub_perms = _get_current_user_permissions(update, context)
+    if not _user_has_permission(None if main_admin else sub_perms, PERM_MANAGE_CREDS):
+        return ConversationHandler.END
+    query = update.callback_query
+    await query.answer()
+    data = query.data or ""
+    menu = build_main_menu_keyboard(main_admin, sub_perms)
+    creds_menu = InlineKeyboardMarkup([[InlineKeyboardButton("← Back", callback_data=CB_BACK)]])
+
+    if data == CB_BACK:
+        await query.edit_message_text(
+            "Manage credentials:", reply_markup=_build_manage_creds_keyboard()
+        )
+        return ConversationHandler.END
+
+    if not data.startswith(CB_RDV_ACCOUNT_PREFIX):
+        return ConversationHandler.END
+    try:
+        acc_id = int(data[len(CB_RDV_ACCOUNT_PREFIX) :])
+    except ValueError:
+        await query.edit_message_text("Invalid account.", reply_markup=creds_menu)
+        return ConversationHandler.END
+
+    SessionLocal = context.bot_data["SessionLocal"]
+    with get_db_session(SessionLocal) as session:
+        repo = InstagramAccountRepository(session)
+        account = repo.get_by_id(acc_id)
+    if not account:
+        await query.edit_message_text("Account not found.", reply_markup=creds_menu)
+        return ConversationHandler.END
+
+    username, password, _ = account
+    await query.edit_message_text(f"Scanning @{username} for dead reels...")
+
+    try:
+        deleted_count, deleted_codes = remove_dead_videos(username, password, min_age_days=1)
+        if deleted_count == 0:
+            msg = f"No dead reels found for @{username}."
+        else:
+            codes_str = ", ".join(deleted_codes[:10])
+            if len(deleted_codes) > 10:
+                codes_str += f" ... and {len(deleted_codes) - 10} more"
+            msg = f"Deleted {deleted_count} dead reel(s) from @{username}: {codes_str}"
+        await query.edit_message_text(msg, reply_markup=menu)
+    except Exception as e:
+        logger.exception("Remove dead videos failed for @%s: %s", username, e)
+        await query.edit_message_text(
+            f"Could not remove dead videos: {e}\n\nCheck credentials and try again.",
+            reply_markup=menu,
+        )
+    return ConversationHandler.END
+
+
 async def remove_admin_username_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Handle username for removing sub-admin."""
     admin_chat_id = context.bot_data["admin_chat_id"]
@@ -1426,6 +1516,9 @@ def create_application(
             ADD_COOKIES: [
                 MessageHandler(filters.Document.ALL, add_cookies_received),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, add_cookies_received),
+            ],
+            REMOVE_DEAD_VIDEOS_PICK_ACCOUNT: [
+                CallbackQueryHandler(remove_dead_videos_account_picked),
             ],
         },
         fallbacks=[
