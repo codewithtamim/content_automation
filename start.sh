@@ -4,12 +4,22 @@ set -e
 echo "=== TiktokAutomation - Termux Setup ==="
 
 # ── Install system packages ──────────────────────────────────────────
-pkg update -y && pkg install -y python ffmpeg git
+# numpy, pillow, and cryptography are much faster to install via pkg
+# than compiling from source with pip
+pkg update -y && pkg install -y \
+    python \
+    ffmpeg \
+    git \
+    python-numpy \
+    python-pillow \
+    python-cryptography
 
 # ── Virtual environment ──────────────────────────────────────────────
+# --system-site-packages lets the venv use numpy/pillow/cryptography
+# installed via pkg (avoids slow source builds)
 if [ ! -d "venv" ]; then
     echo "Creating Python virtual environment..."
-    python -m venv venv
+    python -m venv --system-site-packages venv
 fi
 source venv/bin/activate
 
