@@ -358,14 +358,13 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return ConversationHandler.END
 
     query = update.callback_query
-    await query.answer()
-
+    data = query.data
     main_admin, sub_perms = _get_current_user_permissions(update, context)
     user_perms = None if main_admin else sub_perms
-    data = query.data
 
     if data and data.startswith(CB_CANCEL_JOB_PREFIX):
         if not _user_has_permission(user_perms, PERM_VIEW_SCHEDULED_TASKS):
+            await query.answer()
             return ConversationHandler.END
         try:
             job_id = int(data[len(CB_CANCEL_JOB_PREFIX):])
@@ -384,6 +383,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             logger.exception("Cancel job failed: %s", e)
             await query.answer("Could not cancel job", show_alert=True)
         return ConversationHandler.END
+
+    await query.answer()
 
     if data == CB_BACK:
         await query.edit_message_text(
