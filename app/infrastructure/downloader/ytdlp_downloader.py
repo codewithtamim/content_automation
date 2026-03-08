@@ -6,25 +6,8 @@ from pathlib import Path
 from typing import Optional
 
 import yt_dlp
-from yt_dlp.utils import DownloadError, ExtractorError
 
 logger = logging.getLogger(__name__)
-
-
-def _is_format_unavailable_error(error: Exception) -> bool:
-    """Return True when yt-dlp failed due to unavailable requested format."""
-    err_msg = str(error).lower()
-    needles = (
-        "requested format is not available",
-        "format is not available",
-        "requested format not available",
-        "no video formats found",
-        "no suitable format",
-        "unable to download",
-        "no formats found",
-        "format not available",
-    )
-    return any(needle in err_msg for needle in needles)
 
 
 def _convert_to_mp4(path: str) -> str:
@@ -75,82 +58,27 @@ class YtDlpDownloader:
         """
         output_template = str(self.storage_path / f"{job_id}.%(ext)s")
 
-        base_opts = {
+        ydl_opts = {
+            "format": "bestvideo+bestaudio/best",
             "merge_output_format": "mp4",
+            "recodevideo": "mp4",
             "outtmpl": output_template,
             "quiet": True,
             "no_warnings": True,
             "extract_flat": False,
-            "check_formats": False,
         }
         if self.cookies_path and self.cookies_path.exists() and self.cookies_path.stat().st_size > 0:
-            base_opts["cookiefile"] = str(self.cookies_path)
+            ydl_opts["cookiefile"] = str(self.cookies_path)
 
         extracted_info = {}
 
-        def postprocessor_hook(info):
-            extracted_info["title"] = info.get("title")
-            extracted_info["tags"] = info.get("tags") or []
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            if info:
+                extracted_info["title"] = info.get("title")
+                extracted_info["tags"] = info.get("tags") or []
 
-        # (format, extractor_args) — try in order; format=None means omit format key.
-        # Prioritise clients that do NOT require a PO (Proof-of-Origin) Token.
-        # Use "worst" as fallback — download whatever format is available, then convert to mp4.
-        retry_combinations = [
-            (None, None),
-            ("bv*+ba/b", None),
-            ("b", None),
-            ("bv*+ba/b", {"youtube": {"player_client": "tv"}}),
-            ("b", {"youtube": {"player_client": "tv"}}),
-            ("worst", None),
-            ("worst", {"youtube": {"player_client": "tv"}}),
-            ("worstvideo+worstaudio/worst", None),
-            ("bv*+ba/b", {"youtube": {"player_client": "web_embedded"}}),
-            ("b", {"youtube": {"player_client": "web_embedded"}}),
-            ("worst", {"youtube": {"player_client": "web_embedded"}}),
-            ("bv*+ba/b", {"youtube": {"player_client": "android_vr"}}),
-            ("worst", {"youtube": {"player_client": "android_vr"}}),
-            ("18", None),  # 360p single-file MP4
-            ("17", None),  # 144p single-file MP4 last resort
-        ]
-
-        last_error = None
-        downloaded = False
-        for fmt, extractor_args in retry_combinations:
-            # Clean up any partial files from previous attempt
-            for ext in ["mp4", "webm", "mkv", "m4a", "3gp", "flv"]:
-                (self.storage_path / f"{job_id}.{ext}").unlink(missing_ok=True)
-
-            ydl_opts = dict(base_opts)
-            if fmt is not None:
-                ydl_opts["format"] = fmt
-            if extractor_args is not None:
-                ydl_opts["extractor_args"] = extractor_args
-
-            try:
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(url, download=True)
-                    if info:
-                        extracted_info["title"] = info.get("title")
-                        extracted_info["tags"] = info.get("tags") or []
-                downloaded = True
-                last_error = None
-                break
-            except (DownloadError, ExtractorError) as e:
-                last_error = e
-                if _is_format_unavailable_error(e):
-                    label = f"format={fmt!r}" if fmt else "default format"
-                    if extractor_args:
-                        yt_args = extractor_args.get("youtube", {})
-                        player_client = yt_args.get("player_client", "unknown")
-                        label += f" ({player_client})"
-                    logger.info("%s failed, retrying: %s", label, e)
-                    continue
-                raise
-
-        if not downloaded and last_error is not None:
-            raise last_error
-
-        # Find the downloaded file (yt-dlp may use different extensions; worst can yield 3gp, flv)
+        # Find the downloaded file
         output_path = None
         for ext in ["mp4", "webm", "mkv", "m4a", "3gp", "flv"]:
             candidate = self.storage_path / f"{job_id}.{ext}"
