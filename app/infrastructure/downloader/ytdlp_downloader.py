@@ -11,6 +11,18 @@ from yt_dlp.utils import DownloadError, ExtractorError
 logger = logging.getLogger(__name__)
 
 
+def _is_format_unavailable_error(error: Exception) -> bool:
+    """Return True when yt-dlp failed due to unavailable requested format."""
+    err_msg = str(error).lower()
+    needles = (
+        "requested format is not available",
+        "format is not available",
+        "requested format not available",
+        "no video formats found",
+    )
+    return any(needle in err_msg for needle in needles)
+
+
 def _convert_to_mp4(path: str) -> str:
     """Convert video to mp4 using ffmpeg if not already mp4. Returns path to mp4 file."""
     p = Path(path)
@@ -83,10 +95,13 @@ class YtDlpDownloader:
             ("17", None),  # 144p single-file MP4
             ("bestvideo+bestaudio/best", {"youtube": {"player_client": "web_safari"}}),
             ("best", {"youtube": {"player_client": "web_safari"}}),
+            ("bestvideo+bestaudio/best", {"youtube": {"player_client": "android"}}),
+            ("best", {"youtube": {"player_client": "android"}}),
             (None, None),  # No format - yt-dlp default
         ]
 
         last_error = None
+        downloaded = False
         for fmt, extractor_args in retry_combinations:
             # Clean up any partial files from previous attempt
             for ext in ["mp4", "webm", "mkv", "m4a"]:
@@ -104,19 +119,22 @@ class YtDlpDownloader:
                     if info:
                         extracted_info["title"] = info.get("title")
                         extracted_info["tags"] = info.get("tags") or []
+                downloaded = True
+                last_error = None
                 break
             except (DownloadError, ExtractorError) as e:
                 last_error = e
-                err_msg = str(e).lower()
-                if "format is not available" in err_msg or "requested format" in err_msg:
+                if _is_format_unavailable_error(e):
                     label = f"format={fmt!r}" if fmt else "default format"
                     if extractor_args:
-                        label += " (web_safari)"
+                        yt_args = extractor_args.get("youtube", {})
+                        player_client = yt_args.get("player_client", "unknown")
+                        label += f" ({player_client})"
                     logger.info("%s failed, retrying: %s", label, e)
                     continue
                 raise
 
-        if last_error is not None:
+        if not downloaded and last_error is not None:
             raise last_error
 
         # Find the downloaded file (yt-dlp may use different extensions)
