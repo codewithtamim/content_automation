@@ -3,7 +3,7 @@
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import and_, delete, or_, select
+from sqlalchemy import and_, delete, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.domain.entities.video_job import VideoJob
@@ -275,6 +275,13 @@ class InstagramAccountRepository:
         model = self.session.get(InstagramAccountModel, account_id)
         if not model:
             return False
+        # Nullify references in video_jobs so the FK constraint allows deletion
+        stmt = (
+            update(VideoJobModel)
+            .where(VideoJobModel.instagram_account_id == account_id)
+            .values(instagram_account_id=None)
+        )
+        self.session.execute(stmt)
         self.session.delete(model)
         self.session.flush()
         return True
