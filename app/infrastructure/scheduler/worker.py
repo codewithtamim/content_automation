@@ -116,7 +116,9 @@ def run_worker(
                 now = datetime.now(timezone.utc)
                 pending = repo.get_pending_jobs(now)
 
-            for job in pending:
+            # Process only ONE job per iteration to avoid DB lock contention
+            # when bot creates multiple jobs at once
+            for job in pending[:1]:
                 if stop_event.is_set():
                     break
                 try:
