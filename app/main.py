@@ -27,6 +27,9 @@ def main() -> None:
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         stream=sys.stdout,
     )
+    # Ensure third-party libs (yt-dlp, telegram) log at app level
+    logging.getLogger("yt_dlp").setLevel(log_level)
+    logging.getLogger("telegram").setLevel(log_level)
 
     engine, SessionLocal = create_engine_and_session(settings.database_url)
     init_db(engine)

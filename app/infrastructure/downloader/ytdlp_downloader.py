@@ -78,9 +78,7 @@ class YtDlpDownloader:
         Downloads best available format, then converts to mp4 via ffmpeg.
         """
         output_template = str(self.storage_path / f"{job_id}.%(ext)s")
-
         opts = {
-            "format": "best",
             "outtmpl": output_template,
             "noplaylist": True,
             "logger": logger,
@@ -91,12 +89,6 @@ class YtDlpDownloader:
             and self.cookies_path.stat().st_size > 0
         ):
             opts["cookiefile"] = str(self.cookies_path)
-            logger.info("Using cookies from %s", self.cookies_path)
-        elif self.cookies_path:
-            logger.warning(
-                "Cookies file missing or empty at %s. YouTube may block downloads.",
-                self.cookies_path,
-            )
         if self.proxy:
             opts["proxy"] = self.proxy
 
@@ -107,7 +99,6 @@ class YtDlpDownloader:
                 extracted_info["title"] = info.get("title")
                 extracted_info["tags"] = info.get("tags") or []
 
-        # Locate downloaded file
         output_path = None
         for ext in ["mp4", "webm", "mkv", "m4a", "3gp", "flv"]:
             candidate = self.storage_path / f"{job_id}.{ext}"
