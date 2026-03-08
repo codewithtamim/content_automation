@@ -881,10 +881,10 @@ async def add_admin_username_received(update: Update, context: ContextTypes.DEFA
             await update.message.reply_text(f"@{username} is already a sub-admin.")
             return ConversationHandler.END
     context.user_data["new_admin_username"] = username
-    context.user_data["new_admin_permissions"] = set(ALL_PERMISSIONS)  # Default: full access
+    context.user_data["new_admin_permissions"] = set()  # Default: no permissions (user picks what to add)
     await update.message.reply_text(
         f"Select permissions for @{username}:",
-        reply_markup=_build_permission_picker_keyboard(set(ALL_PERMISSIONS)),
+        reply_markup=_build_permission_picker_keyboard(set()),
     )
     return ADD_ADMIN_PERMISSIONS
 
@@ -910,6 +910,12 @@ async def add_admin_permissions_callback(
             context.user_data.pop("new_admin_username", None)
             context.user_data.pop("new_admin_permissions", None)
             return ConversationHandler.END
+        if not selected:
+            await query.edit_message_text(
+                f"Select at least one permission for @{username}:",
+                reply_markup=_build_permission_picker_keyboard(selected),
+            )
+            return ADD_ADMIN_PERMISSIONS
         SessionLocal = context.bot_data["SessionLocal"]
         try:
             with get_db_session(SessionLocal) as session:

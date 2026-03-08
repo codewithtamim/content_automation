@@ -50,6 +50,29 @@ def _notify_admin_job_failed(
     notify_admin(bot_token, admin_chat_id, msg)
 
 
+def _notify_admin_job_completed(
+    job_id: int,
+    original_url: str,
+    generated_title: str | None,
+    submitted_by_username: str | None,
+    admin_chat_id: str | None,
+    bot_token: str | None,
+) -> None:
+    """Notify admin via Telegram when a job completes successfully."""
+    if not admin_chat_id or not bot_token:
+        return
+    submitter = f"@{submitted_by_username}" if submitted_by_username else "Unknown"
+    title_line = f"Title: {generated_title}\n" if generated_title else ""
+    msg = (
+        f"Job {job_id} completed\n\n"
+        f"Submitted by: {submitter}\n"
+        f"URL: {original_url}\n"
+        f"{title_line}"
+        f"Uploaded to Instagram."
+    )
+    notify_admin(bot_token, admin_chat_id, msg)
+
+
 def run_worker(
     SessionLocal,
     video_storage_path: str,
@@ -148,7 +171,7 @@ def run_worker(
                                 gemini_keys, title, tags, model_name=gemini_model
                             )
 
-                        process_job(
+                        completed_job = process_job(
                             job_id=job.id,
                             repository=repo,
                             downloader=downloader,
@@ -158,6 +181,14 @@ def run_worker(
                             logo_path=watermark_path,
                         )
                         logger.info("Job %s completed successfully", job.id)
+                        _notify_admin_job_completed(
+                            completed_job.id,
+                            completed_job.original_url,
+                            completed_job.generated_title,
+                            completed_job.submitted_by_username,
+                            admin_telegram_chat_id,
+                            telegram_bot_token,
+                        )
                         time.sleep(UPLOAD_DELAY_SECONDS)
                     except Exception as e:
                         logger.exception("Job %s failed: %s", job.id, e)
