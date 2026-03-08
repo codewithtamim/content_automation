@@ -108,8 +108,7 @@ class YtDlpDownloader:
             # Download whatever format is available (webm, mp4, etc). ffmpeg converts to mp4 after.
             "format": "best",
             "outtmpl": output_template,
-            "quiet": True,
-            "no_warnings": True,
+            "logger": logger,
             "extract_flat": False,
             **({"proxy": self.proxy} if self.proxy else {}),
             # Avoid web client - triggers "Sign in to confirm" on datacenter/VPS IPs.
