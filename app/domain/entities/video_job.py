@@ -20,6 +20,7 @@ class VideoJob:
         "uploading",
         "completed",
         "failed",
+        "cancelled",
     ]
     schedule_time: Optional[datetime]
     local_path: Optional[str]

@@ -109,6 +109,7 @@ CB_REMOVE_WM_PREFIX = "rm_wm_"
 CB_REMOVE_DEAD_VIDEOS = "remove_dead_videos"
 CB_RDV_ACCOUNT_PREFIX = "rdv_acc_"
 CB_RETRY_JOB_PREFIX = "retry_job_"
+CB_CANCEL_JOB_PREFIX = "cancel_job_"
 CB_BACK = "back"
 CB_PERM_FULL = "perm_full"
 CB_PERM_UPLOAD = "perm_upload"
@@ -654,7 +655,7 @@ async def _show_instagram_accounts(query, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def _show_scheduled_tasks(query, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show pending/scheduled jobs to the user."""
+    """Show pending/scheduled jobs to the user with Cancel buttons."""
     SessionLocal = context.bot_data["SessionLocal"]
     with get_db_session(SessionLocal) as session:
         repo = VideoJobRepository(session)
@@ -666,6 +667,7 @@ async def _show_scheduled_tasks(query, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     lines = []
+    keyboard = []
     for j in jobs[:20]:
         if j.schedule_time:
             dt = j.schedule_time if j.schedule_time.tzinfo else j.schedule_time.replace(tzinfo=timezone.utc)
@@ -674,10 +676,12 @@ async def _show_scheduled_tasks(query, context: ContextTypes.DEFAULT_TYPE) -> No
         else:
             schedule_str = "ASAP"
         lines.append(f"• [{j.id}] {j.original_url[:50]}... @ {schedule_str}")
+        keyboard.append([InlineKeyboardButton(f"Cancel #{j.id}", callback_data=f"{CB_CANCEL_JOB_PREFIX}{j.id}")])
+    keyboard.append([InlineKeyboardButton("← Back", callback_data=CB_BACK)])
     text = "Scheduled tasks:\n\n" + "\n".join(lines)
     if len(jobs) > 20:
         text += f"\n\n... and {len(jobs) - 20} more"
-    await query.edit_message_text(text, reply_markup=back_btn)
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 
 async def add_gemini_key_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1416,6 +1420,29 @@ async def start_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     return ConversationHandler.END
 
 
+async def cancel_job_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle Cancel button on scheduled tasks."""
+    query = update.callback_query
+    if not query or not query.data:
+        return
+    try:
+        job_id = int(query.data[len(CB_CANCEL_JOB_PREFIX):])
+        SessionLocal = context.bot_data["SessionLocal"]
+        with get_db_session(SessionLocal) as session:
+            repo = VideoJobRepository(session)
+            job = repo.get_by_id(job_id)
+            if job and job.status == "pending":
+                job.status = "cancelled"
+                repo.update(job)
+                await query.answer("Job cancelled")
+                await _show_scheduled_tasks(query, context)
+            else:
+                await query.answer("Job not found or already processed", show_alert=True)
+    except (ValueError, Exception) as e:
+        logger.exception("Cancel job failed: %s", e)
+        await query.answer("Could not cancel job", show_alert=True)
+
+
 async def retry_job_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle Retry button on failed job notifications."""
     query = update.callback_query
@@ -1556,6 +1583,10 @@ def create_application(
         ],
     )
 
+    app.add_handler(
+        CallbackQueryHandler(cancel_job_callback, pattern=f"^{CB_CANCEL_JOB_PREFIX}"),
+        group=0,
+    )
     app.add_handler(
         CallbackQueryHandler(retry_job_callback, pattern=f"^{CB_RETRY_JOB_PREFIX}"),
         group=0,
