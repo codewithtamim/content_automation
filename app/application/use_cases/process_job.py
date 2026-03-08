@@ -42,7 +42,7 @@ def _update_job_status(SessionLocal, job_id: int, **kwargs) -> VideoJob:
 
 def process_job(
     job_id: int,
-    repository: VideoJobRepository,
+    repository: Optional[VideoJobRepository],
     downloader: YtDlpDownloader,
     metadata_client=None,
     instagram_uploader: InstagramUploader = None,
