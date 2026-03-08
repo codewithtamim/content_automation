@@ -1,0 +1,5 @@
+# Packages provided by Termux as prebuilt system packages.
+# Pin them so pip doesn't try to download and compile newer versions from source.
+numpy==2.2.5
+pillow==12.1.1
+cryptography==46.0.5

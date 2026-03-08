@@ -4,19 +4,21 @@ set -e
 echo "=== TiktokAutomation - Termux Setup ==="
 
 # ── Install system packages ──────────────────────────────────────────
-# numpy, pillow, and cryptography are much faster to install via pkg
-# than compiling from source with pip
+# Heavy native packages (numpy, pillow, cryptography) come from Termux
+# repos as prebuilt binaries — building from source takes forever on ARM.
 pkg update -y && pkg install -y \
     python \
     ffmpeg \
     git \
+    binutils \
     python-numpy \
     python-pillow \
-    python-cryptography
+    python-cryptography \
+    python-pip
 
 # ── Virtual environment ──────────────────────────────────────────────
-# --system-site-packages lets the venv use numpy/pillow/cryptography
-# installed via pkg (avoids slow source builds)
+# --system-site-packages lets pip see numpy/pillow/cryptography from pkg
+# so it won't try to compile them again.
 if [ ! -d "venv" ]; then
     echo "Creating Python virtual environment..."
     python -m venv --system-site-packages venv
@@ -25,7 +27,11 @@ source venv/bin/activate
 
 # ── Python dependencies ──────────────────────────────────────────────
 pip install --upgrade pip
-pip install -r requirements.txt
+
+# constraints-termux.txt pins numpy/pillow/cryptography to the exact
+# versions installed by pkg, preventing pip from downloading newer
+# source tarballs and getting stuck compiling C code for hours.
+pip install -c constraints-termux.txt -r requirements.txt
 
 # ── Environment file ─────────────────────────────────────────────────
 if [ ! -f ".env" ]; then
