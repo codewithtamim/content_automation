@@ -245,23 +245,43 @@ def _days_in_month(month: int, year: int) -> int:
     return 31
 
 
+def _hour24_to_12(hour24: int) -> tuple[int, int]:
+    """Convert 24h (0-23) to (hour12 1-12, ampm 0=AM 1=PM)."""
+    if hour24 == 0:
+        return (12, 0)
+    if hour24 < 12:
+        return (hour24, 0)
+    if hour24 == 12:
+        return (12, 1)
+    return (hour24 - 12, 1)
+
+
+def _hour12_to_24(hour12: int, ampm: int) -> int:
+    """Convert (hour12 1-12, ampm 0=AM 1=PM) to 24h (0-23)."""
+    if ampm == 0:  # AM
+        return 0 if hour12 == 12 else hour12
+    # PM
+    return 12 if hour12 == 12 else hour12 + 12
+
+
 def _build_time_picker_keyboard(
-    month: int, day: int, hour: int, minute: int, year: int
+    month: int, day: int, hour12: int, minute: int, ampm: int, year: int
 ) -> InlineKeyboardMarkup:
     """
-    Build inline time picker keyboard with month, day, year, hour, minute.
+    Build inline time picker keyboard with month, day, year, hour (12h 1-12), minute, AM/PM.
     """
     minute = (minute // 5) * 5
-    hour = max(0, min(23, hour))
     minute = max(0, min(55, minute))
     month = max(1, min(12, month))
     cur_year = datetime.now().year
     year = max(cur_year - 1, min(cur_year + 2, year))
     max_day = _days_in_month(month, year)
     day = max(1, min(max_day, day))
+    hour12 = max(1, min(12, hour12))
+    ampm = max(0, min(1, ampm))
 
     def _cb(action: str) -> str:
-        return f"{CB_TP_PREFIX}{action}_{month}_{day}_{hour}_{minute}_{year}"
+        return f"{CB_TP_PREFIX}{action}_{month}_{day}_{hour12}_{minute}_{ampm}_{year}"
 
     month_names = ("", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 
@@ -283,10 +303,10 @@ def _build_time_picker_keyboard(
         InlineKeyboardButton(str(year), callback_data=f"{CB_TP_PREFIX}noop"),
         InlineKeyboardButton("+", callback_data=_cb("yr+")),
     ]
-    # Row 4: Hour [−] [14] [+]
+    # Row 4: Hour (12h) [−] [2] [+]
     hour_row = [
         InlineKeyboardButton("−", callback_data=_cb("h-")),
-        InlineKeyboardButton(f"{hour:02d}", callback_data=f"{CB_TP_PREFIX}noop"),
+        InlineKeyboardButton(str(hour12), callback_data=f"{CB_TP_PREFIX}noop"),
         InlineKeyboardButton("+", callback_data=_cb("h+")),
     ]
     # Row 5: Minute [−] [30] [+]
@@ -295,13 +315,18 @@ def _build_time_picker_keyboard(
         InlineKeyboardButton(f"{minute:02d}", callback_data=f"{CB_TP_PREFIX}noop"),
         InlineKeyboardButton("+", callback_data=_cb("m+")),
     ]
-    # Row 6: Confirm / Cancel
+    # Row 6: AM / PM
+    ampm_row = [
+        InlineKeyboardButton("✓ AM" if ampm == 0 else "AM", callback_data=_cb("ap0")),
+        InlineKeyboardButton("✓ PM" if ampm == 1 else "PM", callback_data=_cb("ap1")),
+    ]
+    # Row 7: Confirm / Cancel
     submit_row = [
         InlineKeyboardButton("✓ Confirm", callback_data=_cb("ok")),
         InlineKeyboardButton("Cancel", callback_data=f"{CB_TP_PREFIX}cancel"),
     ]
 
-    keyboard = [month_row, day_row, year_row, hour_row, min_row, submit_row]
+    keyboard = [month_row, day_row, year_row, hour_row, min_row, ampm_row, submit_row]
     return InlineKeyboardMarkup(keyboard)
 
 
@@ -916,82 +941,92 @@ async def schedule_account_picked(update: Update, context: ContextTypes.DEFAULT_
     acc_id = int(data[len(CB_ACCOUNT_PREFIX) :])
     context.user_data["instagram_account_id"] = acc_id
 
-    # Default: today, current time (or 2:00 PM) in Bangladesh timezone
+    # Default: today, current time in Bangladesh timezone (12h format)
     now_bd = datetime.now(BANGLADESH_TZ)
     month, day, year = now_bd.month, now_bd.day, now_bd.year
-    hour, minute = 14, 0
-    if 0 <= now_bd.hour < 24 and 0 <= now_bd.minute < 60:
-        hour = now_bd.hour
-        minute = (now_bd.minute // 5) * 5
+    hour12, ampm = _hour24_to_12(now_bd.hour if 0 <= now_bd.hour < 24 else 14)
+    minute = (now_bd.minute // 5) * 5 if 0 <= now_bd.minute < 60 else 0
 
     await query.edit_message_text(
         "When should we post? (Bangladesh time)\n\n"
         "Use the picker below or type: month day time am/pm\n"
         "e.g. 3 8 2:30 pm",
-        reply_markup=_build_time_picker_keyboard(month, day, hour, minute, year),
+        reply_markup=_build_time_picker_keyboard(month, day, hour12, minute, ampm, year),
     )
     return SCHEDULE_TIME
 
 
-def _parse_time_picker_callback(data: str) -> tuple[str, int, int, int, int, int] | None:
-    """Parse tp_{action}_{month}_{day}_{hour}_{minute}_{year}. Returns (action, month, day, hour, minute, year) or None."""
+def _parse_time_picker_callback(data: str) -> tuple[str, int, int, int, int, int, int] | None:
+    """Parse tp_{action}_{month}_{day}_{hour12}_{minute}_{ampm}_{year}. Returns (action, month, day, hour12, minute, ampm, year) or None."""
     if not data or not data.startswith(CB_TP_PREFIX):
         return None
     rest = data[len(CB_TP_PREFIX) :]
     if rest == "cancel":
-        return ("cancel", 1, 1, 0, 0, 2025)
+        return ("cancel", 1, 1, 12, 0, 0, 2025)
     if rest == "noop":
-        return ("noop", 1, 1, 0, 0, 2025)
+        return ("noop", 1, 1, 12, 0, 0, 2025)
     parts = rest.split("_")
-    if len(parts) != 6:
+    if len(parts) != 7:
         return None
-    action, mo, dd, h, m, yr = parts
+    action, mo, dd, h, m, ap, yr = parts
     try:
-        return (action, int(mo), int(dd), int(h), int(m), int(yr))
+        return (action, int(mo), int(dd), int(h), int(m), int(ap), int(yr))
     except ValueError:
         return None
 
 
 def _apply_time_picker_action(
-    action: str, month: int, day: int, hour: int, minute: int, year: int
-) -> tuple[int, int, int, int, int]:
-    """Apply +/- action and return new (month, day, hour, minute, year)."""
+    action: str, month: int, day: int, hour12: int, minute: int, ampm: int, year: int
+) -> tuple[int, int, int, int, int, int]:
+    """Apply +/- action and return new (month, day, hour12, minute, ampm, year)."""
     if action == "mo+":
         new_mo = (month % 12) + 1
         max_d = _days_in_month(new_mo, year)
-        return (new_mo, min(day, max_d), hour, minute, year)
+        return (new_mo, min(day, max_d), hour12, minute, ampm, year)
     if action == "mo-":
         new_mo = month - 1 if month > 1 else 12
         max_d = _days_in_month(new_mo, year)
-        return (new_mo, min(day, max_d), hour, minute, year)
+        return (new_mo, min(day, max_d), hour12, minute, ampm, year)
     if action == "dd+":
         max_d = _days_in_month(month, year)
         new_d = (day % max_d) + 1
-        return (month, new_d, hour, minute, year)
+        return (month, new_d, hour12, minute, ampm, year)
     if action == "dd-":
         max_d = _days_in_month(month, year)
         new_d = day - 1 if day > 1 else max_d
-        return (month, new_d, hour, minute, year)
+        return (month, new_d, hour12, minute, ampm, year)
     cur_year = datetime.now().year
     if action == "yr+":
-        return (month, day, hour, minute, min(cur_year + 2, year + 1))
+        return (month, day, hour12, minute, ampm, min(cur_year + 2, year + 1))
     if action == "yr-":
-        return (month, day, hour, minute, max(cur_year - 1, year - 1))
+        return (month, day, hour12, minute, ampm, max(cur_year - 1, year - 1))
     if action == "h+":
-        return (month, day, (hour + 1) % 24, minute, year)
+        new_h12 = (hour12 % 12) + 1
+        new_ap = 1 - ampm if hour12 == 11 else ampm  # 11->12 crosses noon/midnight
+        return (month, day, new_h12, minute, new_ap, year)
     if action == "h-":
-        return (month, day, (hour - 1) % 24, minute, year)
+        new_h12 = hour12 - 1 if hour12 > 1 else 12
+        new_ap = 1 - ampm if hour12 == 12 else ampm  # 12->11 crosses noon/midnight
+        return (month, day, new_h12, minute, new_ap, year)
     if action == "m+":
         new_min = minute + 5
         if new_min >= 60:
-            return (month, day, (hour + 1) % 24, 0, year)
-        return (month, day, hour, new_min, year)
+            new_h12 = (hour12 % 12) + 1
+            new_ap = 1 - ampm if hour12 == 11 else ampm
+            return (month, day, new_h12, 0, new_ap, year)
+        return (month, day, hour12, new_min, ampm, year)
     if action == "m-":
         new_min = minute - 5
         if new_min < 0:
-            return (month, day, (hour - 1) % 24, 55, year)
-        return (month, day, hour, new_min, year)
-    return (month, day, hour, minute, year)
+            new_h12 = hour12 - 1 if hour12 > 1 else 12
+            new_ap = 1 - ampm if hour12 == 12 else ampm
+            return (month, day, new_h12, 55, new_ap, year)
+        return (month, day, hour12, new_min, ampm, year)
+    if action == "ap0":
+        return (month, day, hour12, minute, 0, year)
+    if action == "ap1":
+        return (month, day, hour12, minute, 1, year)
+    return (month, day, hour12, minute, ampm, year)
 
 
 async def schedule_time_picker_callback(
@@ -1010,7 +1045,7 @@ async def schedule_time_picker_callback(
         await query.answer()
         return SCHEDULE_TIME
 
-    action, month, day, hour, minute, year = parsed
+    action, month, day, hour12, minute, ampm, year = parsed
 
     if action == "noop":
         await query.answer()
@@ -1028,8 +1063,9 @@ async def schedule_time_picker_callback(
 
     if action == "ok":
         await query.answer()
+        hour24 = _hour12_to_24(hour12, ampm)
         dt_bd = datetime(
-            year, month, day, hour, minute, 0, tzinfo=BANGLADESH_TZ,
+            year, month, day, hour24, minute, 0, tzinfo=BANGLADESH_TZ,
         )
         schedule_time = dt_bd.astimezone(timezone.utc)
 
@@ -1055,13 +1091,13 @@ async def schedule_time_picker_callback(
         context.user_data.clear()
         return ConversationHandler.END
 
-    # mo+/-, dd+/-, yr+/-, h+/-, m+/-: update keyboard
-    new_mo, new_dd, new_h, new_m, new_yr = _apply_time_picker_action(
-        action, month, day, hour, minute, year
+    # mo+/-, dd+/-, yr+/-, h+/-, m+/-, ap0/ap1: update keyboard
+    new_mo, new_dd, new_h12, new_m, new_ap, new_yr = _apply_time_picker_action(
+        action, month, day, hour12, minute, ampm, year
     )
     await query.answer()
     await query.edit_message_reply_markup(
-        reply_markup=_build_time_picker_keyboard(new_mo, new_dd, new_h, new_m, new_yr),
+        reply_markup=_build_time_picker_keyboard(new_mo, new_dd, new_h12, new_m, new_ap, new_yr),
     )
     return SCHEDULE_TIME
 

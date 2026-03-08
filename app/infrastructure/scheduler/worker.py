@@ -44,7 +44,7 @@ def _notify_admin_job_failed(
     )
     if any(
         x in error_message.lower()
-        for x in ("sign in to confirm", "cookies", "challenge_required")
+        for x in ("sign in to confirm", "cookies", "challenge_required", "consent_required")
     ):
         msg += "\n\nTip: Upload fresh YouTube cookies via Manage credentials → Upload YouTube cookies"
     notify_admin(bot_token, admin_chat_id, msg)
@@ -56,7 +56,7 @@ def run_worker(
     gemini_model: str = "gemini-2.5-flash",
     yt_cookies_path: str = "cookies.txt",
     stop_event: threading.Event | None = None,
-    admin_telegram_chat_id: str | None = None,
+    admin_telegram_chat_id: str | None = None,git
     telegram_bot_token: str | None = None,
 ) -> None:
     """
