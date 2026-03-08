@@ -2,42 +2,12 @@
 
 import logging
 import subprocess
-import tempfile
 from pathlib import Path
 from typing import Optional
 
 import yt_dlp
 
 logger = logging.getLogger(__name__)
-
-# EU consent cookies: CONSENT (legacy) + SOCS (current) = "accept all"
-_CONSENT_COOKIES = [
-    (".youtube.com", "/", "CONSENT", "YES+1"),
-    (".youtube.com", "/", "SOCS", "CAISHAg"),
-    (".consent.youtube.com", "/", "CONSENT", "YES+1"),
-    (".consent.youtube.com", "/", "SOCS", "CAISHAg"),
-]
-
-
-def _ensure_consent_cookies(cookies_path: Optional[Path]) -> tuple[Optional[Path], bool]:
-    """Return (cookies_file_path, is_temp)."""
-    if cookies_path and cookies_path.exists() and cookies_path.stat().st_size > 0:
-        return (cookies_path, False)
-
-    expiration = "9999999999"
-    consent_lines = [
-        f"{domain}\tTRUE\t{path}\tTRUE\t{expiration}\t{name}\t{value}"
-        for domain, path, name, value in _CONSENT_COOKIES
-    ]
-    merged = "# HTTP Cookie File\n" + "\n".join(consent_lines) + "\n"
-
-    fd, path = tempfile.mkstemp(suffix=".txt", prefix="ytdlp_cookies_")
-    try:
-        with open(fd, "w", encoding="utf-8") as f:
-            f.write(merged)
-        return (Path(path), True)
-    except OSError:
-        return (None, False)
 
 
 def _convert_to_mp4(path: str) -> str:
@@ -98,38 +68,6 @@ class YtDlpDownloader:
 
         self.proxy = proxy.strip() if (proxy and proxy.strip()) else None
 
-    def _build_ydl_opts(self, output_template, cookies_to_use, has_user_cookies):
-        """Create yt-dlp configuration."""
-        opts = {
-            # Robust format fallback chain
-            "format": "bv*+ba/bestvideo+bestaudio/best[ext=mp4]/best",
-            "outtmpl": output_template,
-            "logger": logger,
-            "extract_flat": False,
-            "noplaylist": True,
-            "retries": 10,
-            "fragment_retries": 10,
-            "geo_bypass": True,
-            "nocheckcertificate": True,
-            "js_runtimes": ["node"],
-            **({"proxy": self.proxy} if self.proxy else {}),
-            "extractor_args": {
-                "youtube": {
-                    "player_client": (
-                        ["tv_embedded", "tv", "tv_simply", "android_vr", "android"]
-                        if has_user_cookies
-                        else ["tv", "tv_simply", "android_vr", "android"]
-                    ),
-                    "player_skip": ["webpage", "configs"],
-                }
-            },
-        }
-
-        if cookies_to_use:
-            opts["cookiefile"] = str(cookies_to_use)
-
-        return opts
-
     def download(
         self,
         url: str,
@@ -137,56 +75,40 @@ class YtDlpDownloader:
     ) -> tuple[str, Optional[str], Optional[list[str]]]:
         """
         Download video from URL and extract metadata.
+        Downloads best available format, then converts to mp4 via ffmpeg.
         """
-
         output_template = str(self.storage_path / f"{job_id}.%(ext)s")
 
-        cookies_to_use, is_temp = _ensure_consent_cookies(self.cookies_path)
-        has_user_cookies = cookies_to_use is not None and not is_temp
+        opts = {
+            "format": "best",
+            "outtmpl": output_template,
+            "noplaylist": True,
+            "logger": logger,
+        }
+        if (
+            self.cookies_path
+            and self.cookies_path.exists()
+            and self.cookies_path.stat().st_size > 0
+        ):
+            opts["cookiefile"] = str(self.cookies_path)
+            logger.info("Using cookies from %s", self.cookies_path)
+        elif self.cookies_path:
+            logger.warning(
+                "Cookies file missing or empty at %s. YouTube may block downloads.",
+                self.cookies_path,
+            )
+        if self.proxy:
+            opts["proxy"] = self.proxy
 
         extracted_info = {}
-
-        try:
-            if cookies_to_use:
-                logger.info("Using cookies from %s", cookies_to_use)
-
-            elif self.cookies_path:
-                logger.warning(
-                    "Cookies file missing or empty at %s. "
-                    "YouTube may block downloads.",
-                    self.cookies_path,
-                )
-
-            ydl_opts = self._build_ydl_opts(
-                output_template, cookies_to_use, has_user_cookies
-            )
-
-            try:
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(url, download=True)
-
-            except Exception as e:
-                logger.warning("Primary download failed, retrying with safe format: %s", e)
-
-                ydl_opts["format"] = "best"
-
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(url, download=True)
-
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
             if info:
                 extracted_info["title"] = info.get("title")
                 extracted_info["tags"] = info.get("tags") or []
 
-        finally:
-            if is_temp and cookies_to_use:
-                try:
-                    cookies_to_use.unlink(missing_ok=True)
-                except OSError:
-                    pass
-
         # Locate downloaded file
         output_path = None
-
         for ext in ["mp4", "webm", "mkv", "m4a", "3gp", "flv"]:
             candidate = self.storage_path / f"{job_id}.{ext}"
             if candidate.exists():
@@ -196,12 +118,10 @@ class YtDlpDownloader:
         if not output_path:
             raise RuntimeError(f"Download failed: no output file found for job {job_id}")
 
-        # Convert to mp4 if needed
         output_path = _convert_to_mp4(output_path)
 
         title = extracted_info.get("title")
         tags = extracted_info.get("tags")
-
         if tags and not isinstance(tags, list):
             tags = [str(t) for t in tags] if tags else None
 
