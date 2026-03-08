@@ -13,7 +13,7 @@ from app.infrastructure.database.repository import (
     InstagramAccountRepository,
     VideoJobRepository,
 )
-from app.infrastructure.database.session import get_db_session
+from app.infrastructure.database.session import get_db_session, retry_on_locked
 from app.infrastructure.config_paths import get_cookies_path
 from app.infrastructure.downloader.ytdlp_downloader import YtDlpDownloader
 from app.infrastructure.uploaders.instagram_uploader import InstagramUploader
@@ -76,6 +76,7 @@ def _notify_admin_job_completed(
 
 def run_worker(
     SessionLocal,
+    engine,
     video_storage_path: str,
     gemini_model: str = "gemini-2.5-flash",
     yt_cookies_path: str = "cookies.txt",
@@ -198,16 +199,39 @@ def run_worker(
                         time.sleep(UPLOAD_DELAY_SECONDS)
                 except Exception as e:
                     logger.exception("Job %s failed: %s", job.id, e)
+                    marked = False
                     try:
-                        with get_db_session(SessionLocal) as session:
-                            repo = VideoJobRepository(session)
-                            failed_job = repo.get_by_id(job.id)
-                            if failed_job:
-                                failed_job.status = "failed"
-                                failed_job.error_message = str(e)
-                                repo.update(failed_job)
+
+                        def _mark_failed():
+                            with get_db_session(SessionLocal) as session:
+                                repo = VideoJobRepository(session)
+                                failed_job = repo.get_by_id(job.id)
+                                if failed_job:
+                                    failed_job.status = "failed"
+                                    failed_job.error_message = str(e)[:500]  # Limit length
+                                    repo.update(failed_job)
+
+                        retry_on_locked(_mark_failed)
+                        marked = True
                     except Exception as db_err:
                         logger.exception("Could not update job %s to failed: %s", job.id, db_err)
+                        try:
+                            from sqlalchemy import text
+                            with engine.connect() as conn:
+                                now_str = datetime.now(timezone.utc).isoformat()
+                                conn.execute(
+                                    text(
+                                        "UPDATE video_jobs SET status='failed', error_message=:err, updated_at=:now WHERE id=:jid"
+                                    ),
+                                    {"err": str(e)[:500], "jid": job.id, "now": now_str},
+                                )
+                                conn.commit()
+                            marked = True
+                        except Exception as raw_err:
+                            logger.exception("Raw SQL fallback failed for job %s: %s", job.id, raw_err)
+                    if not marked:
+                        logger.warning("Job %s could not be marked failed - will retry next poll", job.id)
+                        time.sleep(5)  # Back off before next job to reduce DB contention
                     _notify_admin_job_failed(
                         job.id, job.original_url, str(e),
                         job.submitted_by_username,

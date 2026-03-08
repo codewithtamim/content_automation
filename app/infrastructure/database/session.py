@@ -85,3 +85,31 @@ def get_db_session(SessionLocal: sessionmaker) -> Generator[Session, None, None]
         raise
     finally:
         session.close()
+
+
+def is_database_locked_error(exc: BaseException) -> bool:
+    """Check if exception is due to SQLite database locked."""
+    msg = str(exc).lower()
+    if "database is locked" in msg or "database_locked" in msg:
+        return True
+    cause = getattr(exc, "__cause__", None)
+    if cause is not None:
+        return is_database_locked_error(cause)
+    return False
+
+
+def retry_on_locked(callable_fn, max_retries: int = 5, base_delay: float = 1.0):
+    """Retry callable on database locked, with exponential backoff."""
+    import time
+    last_exc = None
+    for attempt in range(max_retries + 1):
+        try:
+            return callable_fn()
+        except Exception as e:
+            last_exc = e
+            if attempt < max_retries and is_database_locked_error(e):
+                delay = base_delay * (2**attempt)
+                time.sleep(delay)
+                continue
+            raise
+    raise last_exc

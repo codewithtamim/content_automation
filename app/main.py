@@ -40,6 +40,7 @@ def main() -> None:
         target=run_worker,
         kwargs={
             "SessionLocal": SessionLocal,
+            "engine": engine,
             "video_storage_path": settings.video_storage_path,
             "gemini_model": settings.gemini_model,
             "yt_cookies_path": settings.yt_cookies_path,

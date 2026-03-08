@@ -9,7 +9,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.domain.entities.video_job import VideoJob
 from app.infrastructure.database.repository import VideoJobRepository
-from app.infrastructure.database.session import get_db_session
+from app.infrastructure.database.session import get_db_session, retry_on_locked
 from app.infrastructure.downloader.ytdlp_downloader import YtDlpDownloader
 from app.infrastructure.uploaders.instagram_uploader import InstagramUploader
 from app.infrastructure.video.watermark import add_watermark
@@ -24,16 +24,20 @@ def _build_caption(title: str, tags: list[str]) -> str:
 
 
 def _update_job_status(SessionLocal, job_id: int, **kwargs) -> VideoJob:
-    """Short-lived update: open session, update, commit, close. Avoids holding DB during long ops."""
-    with get_db_session(SessionLocal) as session:
-        repo = VideoJobRepository(session)
-        job = repo.get_by_id(job_id)
-        if not job:
-            raise ValueError(f"Job {job_id} not found")
-        for key, value in kwargs.items():
-            setattr(job, key, value)
-        repo.update(job)
-        return job
+    """Short-lived update: open session, update, commit, close. Retries on database locked."""
+
+    def _do_update():
+        with get_db_session(SessionLocal) as session:
+            repo = VideoJobRepository(session)
+            job = repo.get_by_id(job_id)
+            if not job:
+                raise ValueError(f"Job {job_id} not found")
+            for key, value in kwargs.items():
+                setattr(job, key, value)
+            repo.update(job)
+            return job
+
+    return retry_on_locked(_do_update)
 
 
 def process_job(
