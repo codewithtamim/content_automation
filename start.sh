@@ -50,7 +50,7 @@ pip install "google-genai>=1.66.0"
 # Step 4: instagrapi without moviepy (moviepy pulls numpy source build;
 # instagrapi only uses moviepy for video thumbnails which we don't need)
 pip install instagrapi --no-deps
-pip install PySocks requests
+pip install PySocks requests tzdata
 
 # ── Environment file ─────────────────────────────────────────────────
 if [ ! -f ".env" ]; then
