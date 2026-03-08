@@ -1,6 +1,7 @@
 """yt-dlp video downloader with metadata extraction."""
 
 import logging
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -8,6 +9,16 @@ from typing import Optional
 import yt_dlp
 
 logger = logging.getLogger(__name__)
+
+
+def _get_js_runtimes() -> list[str]:
+    """Find available JS runtimes for yt-dlp (node, nodejs, deno)."""
+    runtimes = []
+    for name in ("node", "nodejs", "deno"):
+        path = shutil.which(name)
+        if path:
+            runtimes.append(f"{name}:{path}")
+    return runtimes if runtimes else ["node"]
 
 
 def _convert_to_mp4(path: str) -> str:
@@ -82,7 +93,7 @@ class YtDlpDownloader:
             "outtmpl": output_template,
             "noplaylist": True,
             "logger": logger,
-            "js_runtimes": ["node"],
+            "js_runtimes": _get_js_runtimes(),
         }
 
         if (
