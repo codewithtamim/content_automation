@@ -2,7 +2,7 @@
 
 import logging
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -82,6 +82,7 @@ UPLOAD_PICK_ACCOUNT, SCHEDULE_PICK_ACCOUNT = 3, 4
 ADD_ADMIN_USERNAME, ADD_ADMIN_PERMISSIONS, REMOVE_ADMIN_USERNAME = 10, 12, 11
 ADD_GEMINI_KEY = 20
 ADD_INSTA_USERNAME, ADD_INSTA_PASSWORD = 21, 22
+ADD_COOKIES = 23
 
 # Callback data
 CB_UPLOAD = "upload"
@@ -94,6 +95,7 @@ CB_LIST_ADMINS = "list_admins"
 CB_MANAGE_CREDS = "manage_creds"
 CB_ADD_GEMINI = "add_gemini"
 CB_ADD_INSTA = "add_insta"
+CB_ADD_COOKIES = "add_cookies"
 CB_LIST_GEMINI = "list_gemini"
 CB_LIST_INSTA = "list_insta"
 CB_ACCOUNT_PREFIX = "acc_"
@@ -155,6 +157,12 @@ def is_admin(update: Update, admin_chat_id: str, admin_username: str, sub_admin_
         return True
     user_username = (update.effective_user.username or "").lower()
     return user_username in sub_admin_usernames
+
+
+async def _get_main_menu_for_completion(update: Update, context: ContextTypes.DEFAULT_TYPE) -> InlineKeyboardMarkup:
+    """Get main menu keyboard for showing after task completion."""
+    main_admin, sub_perms = _get_current_user_permissions(update, context)
+    return build_main_menu_keyboard(main_admin, sub_perms)
 
 
 def build_main_menu_keyboard(
@@ -220,6 +228,7 @@ def _build_manage_creds_keyboard() -> InlineKeyboardMarkup:
     keyboard = [
         [InlineKeyboardButton("Add Gemini key", callback_data=CB_ADD_GEMINI)],
         [InlineKeyboardButton("Add Instagram account", callback_data=CB_ADD_INSTA)],
+        [InlineKeyboardButton("Upload YouTube cookies", callback_data=CB_ADD_COOKIES)],
         [InlineKeyboardButton("List Gemini keys", callback_data=CB_LIST_GEMINI)],
         [InlineKeyboardButton("List Instagram accounts", callback_data=CB_LIST_INSTA)],
         [InlineKeyboardButton("← Back", callback_data=CB_BACK)],
@@ -227,43 +236,72 @@ def _build_manage_creds_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(keyboard)
 
 
-def _build_time_picker_keyboard(hour: int, minute: int, day_offset: int = 0) -> InlineKeyboardMarkup:
+def _days_in_month(month: int, year: int) -> int:
+    """Return number of days in month (1-12)."""
+    if month in (4, 6, 9, 11):
+        return 30
+    if month == 2:
+        return 29 if (year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)) else 28
+    return 31
+
+
+def _build_time_picker_keyboard(
+    month: int, day: int, hour: int, minute: int, year: int
+) -> InlineKeyboardMarkup:
     """
-    Build inline time picker keyboard (telegraf-time-picker style).
-    hour: 0-23, minute: 0,5,10,...,55, day_offset: 0=today, 1=tomorrow.
+    Build inline time picker keyboard with month, day, year, hour, minute.
     """
-    minute = (minute // 5) * 5  # Snap to 5-min steps
+    minute = (minute // 5) * 5
     hour = max(0, min(23, hour))
     minute = max(0, min(55, minute))
-    day_offset = max(0, min(1, day_offset))
+    month = max(1, min(12, month))
+    cur_year = datetime.now().year
+    year = max(cur_year - 1, min(cur_year + 2, year))
+    max_day = _days_in_month(month, year)
+    day = max(1, min(max_day, day))
 
     def _cb(action: str) -> str:
-        return f"{CB_TP_PREFIX}{action}_{hour}_{minute}_{day_offset}"
+        return f"{CB_TP_PREFIX}{action}_{month}_{day}_{hour}_{minute}_{year}"
 
-    # Row 1: Date (Today / Tomorrow)
-    date_row = [
-        InlineKeyboardButton("✓ Today" if day_offset == 0 else "Today", callback_data=_cb("d0")),
-        InlineKeyboardButton("✓ Tomorrow" if day_offset == 1 else "Tomorrow", callback_data=_cb("d1")),
+    month_names = ("", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+    # Row 1: Month [−] [Mar] [+]
+    month_row = [
+        InlineKeyboardButton("−", callback_data=_cb("mo-")),
+        InlineKeyboardButton(month_names[month], callback_data=f"{CB_TP_PREFIX}noop"),
+        InlineKeyboardButton("+", callback_data=_cb("mo+")),
     ]
-    # Row 2: Hour display and controls
+    # Row 2: Day [−] [8] [+]
+    day_row = [
+        InlineKeyboardButton("−", callback_data=_cb("dd-")),
+        InlineKeyboardButton(str(day), callback_data=f"{CB_TP_PREFIX}noop"),
+        InlineKeyboardButton("+", callback_data=_cb("dd+")),
+    ]
+    # Row 3: Year [−] [2025] [+]
+    year_row = [
+        InlineKeyboardButton("−", callback_data=_cb("yr-")),
+        InlineKeyboardButton(str(year), callback_data=f"{CB_TP_PREFIX}noop"),
+        InlineKeyboardButton("+", callback_data=_cb("yr+")),
+    ]
+    # Row 4: Hour [−] [14] [+]
     hour_row = [
         InlineKeyboardButton("−", callback_data=_cb("h-")),
         InlineKeyboardButton(f"{hour:02d}", callback_data=f"{CB_TP_PREFIX}noop"),
         InlineKeyboardButton("+", callback_data=_cb("h+")),
     ]
-    # Row 3: Minute display and controls
+    # Row 5: Minute [−] [30] [+]
     min_row = [
         InlineKeyboardButton("−", callback_data=_cb("m-")),
         InlineKeyboardButton(f"{minute:02d}", callback_data=f"{CB_TP_PREFIX}noop"),
         InlineKeyboardButton("+", callback_data=_cb("m+")),
     ]
-    # Row 4: Submit / Cancel
+    # Row 6: Confirm / Cancel
     submit_row = [
         InlineKeyboardButton("✓ Confirm", callback_data=_cb("ok")),
         InlineKeyboardButton("Cancel", callback_data=f"{CB_TP_PREFIX}cancel"),
     ]
 
-    keyboard = [date_row, hour_row, min_row, submit_row]
+    keyboard = [month_row, day_row, year_row, hour_row, min_row, submit_row]
     return InlineKeyboardMarkup(keyboard)
 
 
@@ -315,6 +353,15 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             return ConversationHandler.END
         await query.edit_message_text("Send Instagram username:")
         return ADD_INSTA_USERNAME
+    elif data == CB_ADD_COOKIES:
+        if not _user_has_permission(user_perms, PERM_MANAGE_CREDS):
+            return ConversationHandler.END
+        await query.edit_message_text(
+            "Send the cookies file (Netscape format).\n\n"
+            "Export from your PC: yt-dlp --cookies-from-browser chrome -o cookies.txt\n"
+            "Then send the file here."
+        )
+        return ADD_COOKIES
     elif data == CB_LIST_GEMINI:
         if not _user_has_permission(user_perms, PERM_MANAGE_CREDS):
             return ConversationHandler.END
@@ -333,13 +380,13 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             SessionLocal = context.bot_data["SessionLocal"]
             with get_db_session(SessionLocal) as session:
                 repo = GeminiKeyRepository(session)
-                back_mk = InlineKeyboardMarkup([[InlineKeyboardButton("← Back", callback_data=CB_BACK)]])
+                menu = build_main_menu_keyboard(main_admin, sub_perms)
                 if repo.remove(key_id):
-                    await query.edit_message_text(f"Removed Gemini key {key_id}. ✓", reply_markup=back_mk)
+                    await query.edit_message_text(f"Removed Gemini key {key_id}. ✓", reply_markup=menu)
                 else:
-                    await query.edit_message_text("That key wasn't found.", reply_markup=back_mk)
+                    await query.edit_message_text("That key wasn't found.", reply_markup=menu)
         except ValueError:
-            await query.edit_message_text("Invalid key ID.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("← Back", callback_data=CB_BACK)]]))
+            await query.edit_message_text("Invalid key ID.", reply_markup=build_main_menu_keyboard(main_admin, sub_perms))
         return ConversationHandler.END
     elif data and data.startswith(CB_REMOVE_INSTA_PREFIX):
         if not _user_has_permission(user_perms, PERM_MANAGE_CREDS):
@@ -349,15 +396,15 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             SessionLocal = context.bot_data["SessionLocal"]
             with get_db_session(SessionLocal) as session:
                 repo = InstagramAccountRepository(session)
-                back_mk = InlineKeyboardMarkup([[InlineKeyboardButton("← Back", callback_data=CB_BACK)]])
+                menu = build_main_menu_keyboard(main_admin, sub_perms)
                 if repo.remove(acc_id):
-                    await query.edit_message_text(f"Removed Instagram account {acc_id}. ✓", reply_markup=back_mk)
+                    await query.edit_message_text(f"Removed Instagram account {acc_id}. ✓", reply_markup=menu)
                 else:
-                    await query.edit_message_text("That account wasn't found.", reply_markup=back_mk)
+                    await query.edit_message_text("That account wasn't found.", reply_markup=menu)
         except ValueError:
             await query.edit_message_text(
                 "Invalid account ID.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("← Back", callback_data=CB_BACK)]]),
+                reply_markup=build_main_menu_keyboard(main_admin, sub_perms),
             )
         return ConversationHandler.END
 
@@ -549,9 +596,48 @@ async def add_gemini_key_received(update: Update, context: ContextTypes.DEFAULT_
             keys = repo.list_all_ordered()
             priority = len(keys)
             repo.add(key, priority=priority)
-        await update.message.reply_text("Got it! Gemini key added. ✓")
+        menu = await _get_main_menu_for_completion(update, context)
+        await update.message.reply_text("Got it! Gemini key added. ✓", reply_markup=menu)
     except Exception:
         await update.message.reply_text("Couldn't add the key. Try again?")
+    return ConversationHandler.END
+
+
+async def add_cookies_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle cookies file upload - save to cookies path."""
+    admin_chat_id = context.bot_data["admin_chat_id"]
+    admin_username = context.bot_data["admin_username"]
+    if not is_main_admin(update, admin_chat_id, admin_username):
+        return ConversationHandler.END
+
+    if not update.message:
+        return ADD_COOKIES
+
+    if not update.message.document:
+        menu = await _get_main_menu_for_completion(update, context)
+        await update.message.reply_text(
+            "Send the cookies file as a document, or /cancel to abort.",
+            reply_markup=menu,
+        )
+        return ConversationHandler.END
+
+    cookies_path = context.bot_data.get("cookies_path")
+    if not cookies_path:
+        await update.message.reply_text("Cookies path not configured.")
+        return ConversationHandler.END
+
+    try:
+        doc = update.message.document
+        file = await context.bot.get_file(doc.file_id)
+        await file.download_to_drive(cookies_path)
+        menu = await _get_main_menu_for_completion(update, context)
+        await update.message.reply_text(
+            "Cookies file saved! ✓ yt-dlp will use it for YouTube downloads.",
+            reply_markup=menu,
+        )
+    except Exception as e:
+        logger.exception("Failed to save cookies file: %s", e)
+        await update.message.reply_text(f"Couldn't save the file: {e}")
     return ConversationHandler.END
 
 
@@ -586,7 +672,8 @@ async def add_insta_password_received(update: Update, context: ContextTypes.DEFA
         with get_db_session(SessionLocal) as session:
             repo = InstagramAccountRepository(session)
             repo.add(username, password)
-        await update.message.reply_text(f"Added @{username} – Instagram account ready! ✓")
+        menu = await _get_main_menu_for_completion(update, context)
+        await update.message.reply_text(f"Added @{username} – Instagram account ready! ✓", reply_markup=menu)
     except Exception:
         await update.message.reply_text("Couldn't add – username may already exist.")
     context.user_data.pop("insta_username", None)
@@ -645,9 +732,10 @@ async def add_admin_permissions_callback(
                 repo = SubAdminRepository(session)
                 repo.add(username, list(selected))
             perms_str = _format_permissions_display(list(selected))
+            menu = await _get_main_menu_for_completion(update, context)
             await query.edit_message_text(
                 f"Done! @{username} is now a sub-admin with {perms_str}. ✓",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("← Back", callback_data=CB_BACK)]]),
+                reply_markup=menu,
             )
         except ValueError as e:
             await query.edit_message_text(str(e))
@@ -710,10 +798,11 @@ async def remove_admin_username_received(update: Update, context: ContextTypes.D
     with get_db_session(SessionLocal) as session:
         repo = SubAdminRepository(session)
         removed = repo.remove(username)
+    menu = await _get_main_menu_for_completion(update, context)
     if removed:
-        await update.message.reply_text(f"Removed @{username.lower().lstrip('@')} from sub-admins. ✓")
+        await update.message.reply_text(f"Removed @{username.lower().lstrip('@')} from sub-admins. ✓", reply_markup=menu)
     else:
-        await update.message.reply_text("That user isn't a sub-admin.")
+        await update.message.reply_text("That user isn't a sub-admin.", reply_markup=menu)
     return ConversationHandler.END
 
 
@@ -768,8 +857,10 @@ async def upload_account_picked(update: Update, context: ContextTypes.DEFAULT_TY
             repo, urls, schedule_time=None, instagram_account_id=acc_id,
             submitted_by_username=submitted_by,
         )
+    menu = await _get_main_menu_for_completion(update, context)
     await query.edit_message_text(
-        f"Uploading! 🎬 {len(job_ids)} video(s) queued – they'll be going live on Instagram shortly.\n\nJob IDs: {job_ids}"
+        f"Uploading! 🎬 {len(job_ids)} video(s) queued – they'll be going live on Instagram shortly.\n\nJob IDs: {job_ids}",
+        reply_markup=menu,
     )
     context.user_data.clear()
     return ConversationHandler.END
@@ -818,8 +909,9 @@ async def schedule_account_picked(update: Update, context: ContextTypes.DEFAULT_
     acc_id = int(data[len(CB_ACCOUNT_PREFIX) :])
     context.user_data["instagram_account_id"] = acc_id
 
-    # Default: today, 2:00 PM Bangladesh time
+    # Default: today, current time (or 2:00 PM) in Bangladesh timezone
     now_bd = datetime.now(BANGLADESH_TZ)
+    month, day, year = now_bd.month, now_bd.day, now_bd.year
     hour, minute = 14, 0
     if 0 <= now_bd.hour < 24 and 0 <= now_bd.minute < 60:
         hour = now_bd.hour
@@ -829,53 +921,70 @@ async def schedule_account_picked(update: Update, context: ContextTypes.DEFAULT_
         "When should we post? (Bangladesh time)\n\n"
         "Use the picker below or type: month day time am/pm\n"
         "e.g. 3 8 2:30 pm",
-        reply_markup=_build_time_picker_keyboard(hour, minute, day_offset=0),
+        reply_markup=_build_time_picker_keyboard(month, day, hour, minute, year),
     )
     return SCHEDULE_TIME
 
 
-def _parse_time_picker_callback(data: str) -> tuple[str, int, int, int] | None:
-    """Parse tp_{action}_{hour}_{minute}_{day_offset}. Returns (action, hour, minute, day_offset) or None."""
+def _parse_time_picker_callback(data: str) -> tuple[str, int, int, int, int, int] | None:
+    """Parse tp_{action}_{month}_{day}_{hour}_{minute}_{year}. Returns (action, month, day, hour, minute, year) or None."""
     if not data or not data.startswith(CB_TP_PREFIX):
         return None
     rest = data[len(CB_TP_PREFIX) :]
     if rest == "cancel":
-        return ("cancel", 0, 0, 0)
+        return ("cancel", 1, 1, 0, 0, 2025)
     if rest == "noop":
-        return ("noop", 0, 0, 0)
+        return ("noop", 1, 1, 0, 0, 2025)
     parts = rest.split("_")
-    if len(parts) != 4:
+    if len(parts) != 6:
         return None
-    action, h, m, d = parts
+    action, mo, dd, h, m, yr = parts
     try:
-        return (action, int(h), int(m), int(d))
+        return (action, int(mo), int(dd), int(h), int(m), int(yr))
     except ValueError:
         return None
 
 
 def _apply_time_picker_action(
-    action: str, hour: int, minute: int, day_offset: int
-) -> tuple[int, int, int]:
-    """Apply +/- action and return new (hour, minute, day_offset)."""
+    action: str, month: int, day: int, hour: int, minute: int, year: int
+) -> tuple[int, int, int, int, int]:
+    """Apply +/- action and return new (month, day, hour, minute, year)."""
+    if action == "mo+":
+        new_mo = (month % 12) + 1
+        max_d = _days_in_month(new_mo, year)
+        return (new_mo, min(day, max_d), hour, minute, year)
+    if action == "mo-":
+        new_mo = month - 1 if month > 1 else 12
+        max_d = _days_in_month(new_mo, year)
+        return (new_mo, min(day, max_d), hour, minute, year)
+    if action == "dd+":
+        max_d = _days_in_month(month, year)
+        new_d = (day % max_d) + 1
+        return (month, new_d, hour, minute, year)
+    if action == "dd-":
+        max_d = _days_in_month(month, year)
+        new_d = day - 1 if day > 1 else max_d
+        return (month, new_d, hour, minute, year)
+    cur_year = datetime.now().year
+    if action == "yr+":
+        return (month, day, hour, minute, min(cur_year + 2, year + 1))
+    if action == "yr-":
+        return (month, day, hour, minute, max(cur_year - 1, year - 1))
     if action == "h+":
-        return ((hour + 1) % 24, minute, day_offset)
+        return (month, day, (hour + 1) % 24, minute, year)
     if action == "h-":
-        return ((hour - 1) % 24, minute, day_offset)
+        return (month, day, (hour - 1) % 24, minute, year)
     if action == "m+":
         new_min = minute + 5
         if new_min >= 60:
-            return ((hour + 1) % 24, 0, day_offset)
-        return (hour, new_min, day_offset)
+            return (month, day, (hour + 1) % 24, 0, year)
+        return (month, day, hour, new_min, year)
     if action == "m-":
         new_min = minute - 5
         if new_min < 0:
-            return ((hour - 1) % 24, 55, day_offset)
-        return (hour, new_min, day_offset)
-    if action == "d0":
-        return (hour, minute, 0)
-    if action == "d1":
-        return (hour, minute, 1)
-    return (hour, minute, day_offset)
+            return (month, day, (hour - 1) % 24, 55, year)
+        return (month, day, hour, new_min, year)
+    return (month, day, hour, minute, year)
 
 
 async def schedule_time_picker_callback(
@@ -894,7 +1003,7 @@ async def schedule_time_picker_callback(
         await query.answer()
         return SCHEDULE_TIME
 
-    action, hour, minute, day_offset = parsed
+    action, month, day, hour, minute, year = parsed
 
     if action == "noop":
         await query.answer()
@@ -912,14 +1021,8 @@ async def schedule_time_picker_callback(
 
     if action == "ok":
         await query.answer()
-        # Build schedule_time from hour, minute, day_offset (Bangladesh time)
-        now_bd = datetime.now(BANGLADESH_TZ)
-        target_date = now_bd.date()
-        if day_offset == 1:
-            target_date = target_date + timedelta(days=1)
         dt_bd = datetime(
-            target_date.year, target_date.month, target_date.day,
-            hour, minute, 0, tzinfo=BANGLADESH_TZ,
+            year, month, day, hour, minute, 0, tzinfo=BANGLADESH_TZ,
         )
         schedule_time = dt_bd.astimezone(timezone.utc)
 
@@ -936,18 +1039,22 @@ async def schedule_time_picker_callback(
                 submitted_by_username=submitted_by,
             )
 
+        menu = await _get_main_menu_for_completion(update, context)
         await query.edit_message_text(
             f"Done! 📅 {len(job_ids)} video(s) scheduled for "
-            f"{dt_bd.strftime('%b %d, %Y %I:%M %p')} (BD time). They'll post automatically!\n\nJob IDs: {job_ids}"
+            f"{dt_bd.strftime('%b %d, %Y %I:%M %p')} (BD time). They'll post automatically!\n\nJob IDs: {job_ids}",
+            reply_markup=menu,
         )
         context.user_data.clear()
         return ConversationHandler.END
 
-    # h+, h-, m+, m-, d0, d1: update keyboard
-    new_hour, new_minute, new_day = _apply_time_picker_action(action, hour, minute, day_offset)
+    # mo+/-, dd+/-, yr+/-, h+/-, m+/-: update keyboard
+    new_mo, new_dd, new_h, new_m, new_yr = _apply_time_picker_action(
+        action, month, day, hour, minute, year
+    )
     await query.answer()
     await query.edit_message_reply_markup(
-        reply_markup=_build_time_picker_keyboard(new_hour, new_minute, new_day),
+        reply_markup=_build_time_picker_keyboard(new_mo, new_dd, new_h, new_m, new_yr),
     )
     return SCHEDULE_TIME
 
@@ -989,8 +1096,10 @@ async def schedule_time_received(update: Update, context: ContextTypes.DEFAULT_T
         )
 
     bd_time = schedule_time.astimezone(BANGLADESH_TZ)
+    menu = await _get_main_menu_for_completion(update, context)
     await update.message.reply_text(
-        f"Done! 📅 {len(job_ids)} video(s) scheduled for {bd_time.strftime('%b %d, %Y %I:%M %p')} (BD time). They'll post automatically!\n\nJob IDs: {job_ids}"
+        f"Done! 📅 {len(job_ids)} video(s) scheduled for {bd_time.strftime('%b %d, %Y %I:%M %p')} (BD time). They'll post automatically!\n\nJob IDs: {job_ids}",
+        reply_markup=menu,
     )
     context.user_data.clear()
     return ConversationHandler.END
@@ -1051,6 +1160,7 @@ def create_application(
     admin_chat_id: str,
     admin_username: str,
     SessionLocal,
+    cookies_path: str = "",
 ) -> Application:
     """Create and configure the Telegram bot application."""
     app = (
@@ -1061,6 +1171,7 @@ def create_application(
     app.bot_data["admin_chat_id"] = admin_chat_id
     app.bot_data["admin_username"] = admin_username
     app.bot_data["SessionLocal"] = SessionLocal
+    app.bot_data["cookies_path"] = cookies_path
 
     # Conversation handler for upload, schedule, admin and credential management flows
     conv_handler = ConversationHandler(
@@ -1102,6 +1213,10 @@ def create_application(
             ],
             ADD_INSTA_PASSWORD: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, add_insta_password_received),
+            ],
+            ADD_COOKIES: [
+                MessageHandler(filters.Document.ALL, add_cookies_received),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_cookies_received),
             ],
         },
         fallbacks=[
