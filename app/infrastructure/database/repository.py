@@ -134,18 +134,35 @@ class VideoJobRepository:
         return [_model_to_entity(m) for m in models]
 
 
+# Sub-admin permission constants
+PERM_UPLOAD_VIDEOS = "upload_videos"
+PERM_SCHEDULE_UPLOADS = "schedule_uploads"
+PERM_VIEW_SCHEDULED_TASKS = "view_scheduled_tasks"
+PERM_MANAGE_ADMINS = "manage_admins"
+PERM_MANAGE_CREDS = "manage_creds"
+
+ALL_PERMISSIONS = [
+    PERM_UPLOAD_VIDEOS,
+    PERM_SCHEDULE_UPLOADS,
+    PERM_VIEW_SCHEDULED_TASKS,
+    PERM_MANAGE_ADMINS,
+    PERM_MANAGE_CREDS,
+]
+
+
 class SubAdminRepository:
     """Repository for sub-admin persistence."""
 
     def __init__(self, session: Session):
         self.session = session
 
-    def add(self, username: str) -> SubAdminModel:
+    def add(self, username: str, permissions: list[str] | None = None) -> SubAdminModel:
         """Add a sub-admin. Username is normalized (lowercase, no @)."""
         normalized = username.strip().lower().lstrip("@")
         if not normalized:
             raise ValueError("Username cannot be empty")
-        model = SubAdminModel(username=normalized)
+        perms = permissions if permissions is not None else ALL_PERMISSIONS
+        model = SubAdminModel(username=normalized, permissions=perms)
         self.session.add(model)
         self.session.flush()
         return model
@@ -157,11 +174,27 @@ class SubAdminRepository:
         result = self.session.execute(stmt)
         return result.rowcount > 0
 
-    def list_all(self) -> list[str]:
-        """Return all sub-admin usernames."""
-        stmt = select(SubAdminModel.username).order_by(SubAdminModel.username)
+    def list_all(self) -> list[tuple[str, list[str]]]:
+        """Return all sub-admins as (username, permissions) tuples."""
+        stmt = select(SubAdminModel.username, SubAdminModel.permissions).order_by(
+            SubAdminModel.username
+        )
         result = self.session.execute(stmt)
-        return [row[0] for row in result.fetchall()]
+        rows = result.fetchall()
+        return [
+            (row[0], list(row[1]) if row[1] else ALL_PERMISSIONS)
+            for row in rows
+        ]
+
+    def get_permissions(self, username: str) -> list[str] | None:
+        """Return permissions for a sub-admin, or None if not found."""
+        normalized = username.strip().lower().lstrip("@")
+        stmt = select(SubAdminModel.permissions).where(SubAdminModel.username == normalized)
+        result = self.session.execute(stmt)
+        row = result.first()
+        if row is None or row[0] is None:
+            return None
+        return list(row[0])
 
     def exists(self, username: str) -> bool:
         """Check if username is a sub-admin."""
@@ -169,6 +202,8 @@ class SubAdminRepository:
         stmt = select(SubAdminModel).where(SubAdminModel.username == normalized)
         result = self.session.execute(stmt)
         return result.scalars().first() is not None
+
+
 
 
 class GeminiKeyRepository:

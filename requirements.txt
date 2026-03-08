@@ -2,7 +2,7 @@
 python-telegram-bot>=20.0
 
 # Video Download
-yt-dlp>=2024.1.0
+yt-dlp>=2026.3.3
 
 # Social Media Uploaders
 instagrapi>=2.0.0

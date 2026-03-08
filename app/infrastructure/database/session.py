@@ -52,6 +52,27 @@ def init_db(engine) -> None:
             )
             conn.commit()
 
+    # Migration: add permissions to sub_admins if missing (for existing DBs)
+    with engine.connect() as conn:
+        result = conn.execute(
+            text(
+                """
+                SELECT column_name FROM information_schema.columns
+                WHERE table_name = 'sub_admins' AND column_name = 'permissions'
+                """
+            )
+        )
+        if result.fetchone() is None:
+            conn.execute(text("ALTER TABLE sub_admins ADD COLUMN permissions TEXT[]"))
+            # Existing sub-admins get full access (all permissions)
+            conn.execute(
+                text(
+                    "UPDATE sub_admins SET permissions = ARRAY['upload_videos','schedule_uploads',"
+                    "'view_scheduled_tasks','manage_admins','manage_creds']"
+                )
+            )
+            conn.commit()
+
 
 @contextmanager
 def get_db_session(SessionLocal: sessionmaker) -> Generator[Session, None, None]:

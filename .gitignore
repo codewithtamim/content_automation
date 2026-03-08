@@ -1,4 +1,5 @@
 .env
+cookies.txt
 .venv
 venv
 __pycache__

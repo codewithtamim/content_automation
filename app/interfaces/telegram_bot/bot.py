@@ -1,8 +1,12 @@
 """Telegram bot interface with admin-only access control."""
 
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
+
+BANGLADESH_TZ = ZoneInfo("Asia/Dhaka")
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import Conflict
@@ -18,6 +22,12 @@ from telegram.ext import (
 
 from app.application.use_cases.create_job import create_job, parse_urls
 from app.infrastructure.database.repository import (
+    ALL_PERMISSIONS,
+    PERM_MANAGE_ADMINS,
+    PERM_MANAGE_CREDS,
+    PERM_SCHEDULE_UPLOADS,
+    PERM_UPLOAD_VIDEOS,
+    PERM_VIEW_SCHEDULED_TASKS,
     GeminiKeyRepository,
     InstagramAccountRepository,
     SubAdminRepository,
@@ -27,11 +37,49 @@ from app.infrastructure.database.session import get_db_session
 
 logger = logging.getLogger(__name__)
 
+
+def _parse_schedule_time_bd(text: str) -> datetime | None:
+    """
+    Parse schedule time in Bangladesh time.
+    Format: month day time am/pm (year = current year).
+    Examples: "3 8 2:30 pm", "12-25 9:00 am", "3/8 14:30" (24h also ok).
+    """
+    text = text.strip().lower()
+    # Match: month day time (am|pm) - month/day can be separated by space, - or /
+    m = re.match(
+        r"(\d{1,2})[-/\s]+(\d{1,2})\s+(\d{1,2}):(\d{2})\s*(am|pm)?",
+        text,
+        re.IGNORECASE,
+    )
+    if not m:
+        return None
+    month, day, hour, minute = int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4))
+    ampm = (m.group(5) or "").lower()
+
+    if not (1 <= month <= 12 and 1 <= day <= 31 and 0 <= minute <= 59):
+        return None
+
+    if ampm:
+        if ampm == "pm" and hour != 12:
+            hour += 12
+        elif ampm == "am" and hour == 12:
+            hour = 0
+    if hour > 23:
+        hour = 23
+
+    year = datetime.now(BANGLADESH_TZ).year
+    try:
+        dt_bd = datetime(year, month, day, hour, minute, 0, tzinfo=BANGLADESH_TZ)
+        return dt_bd.astimezone(timezone.utc)
+    except ValueError:
+        return None
+
+
 # Conversation states
 UPLOAD_URLS = 0
 SCHEDULE_URLS, SCHEDULE_TIME = 1, 2
 UPLOAD_PICK_ACCOUNT, SCHEDULE_PICK_ACCOUNT = 3, 4
-ADD_ADMIN_USERNAME, REMOVE_ADMIN_USERNAME = 10, 11
+ADD_ADMIN_USERNAME, ADD_ADMIN_PERMISSIONS, REMOVE_ADMIN_USERNAME = 10, 12, 11
 ADD_GEMINI_KEY = 20
 ADD_INSTA_USERNAME, ADD_INSTA_PASSWORD = 21, 22
 
@@ -51,6 +99,14 @@ CB_LIST_INSTA = "list_insta"
 CB_ACCOUNT_PREFIX = "acc_"
 CB_REMOVE_GEMINI_PREFIX = "rm_gem_"
 CB_REMOVE_INSTA_PREFIX = "rm_inst_"
+CB_BACK = "back"
+CB_PERM_FULL = "perm_full"
+CB_PERM_UPLOAD = "perm_upload"
+CB_PERM_SCHEDULE = "perm_schedule"
+CB_PERM_VIEW = "perm_view"
+CB_PERM_MANAGE_ADMINS = "perm_manage_admins"
+CB_PERM_MANAGE_CREDS = "perm_manage_creds"
+CB_PERM_DONE = "perm_done"
 
 
 def _get_sub_admin_usernames(context: ContextTypes.DEFAULT_TYPE) -> set[str]:
@@ -58,7 +114,25 @@ def _get_sub_admin_usernames(context: ContextTypes.DEFAULT_TYPE) -> set[str]:
     SessionLocal = context.bot_data["SessionLocal"]
     with get_db_session(SessionLocal) as session:
         repo = SubAdminRepository(session)
-        return set(repo.list_all())
+        return {username for username, _ in repo.list_all()}
+
+
+def _get_sub_admin_permissions(
+    context: ContextTypes.DEFAULT_TYPE, username: str
+) -> set[str] | None:
+    """Get permissions for a sub-admin, or None if not a sub-admin."""
+    SessionLocal = context.bot_data["SessionLocal"]
+    with get_db_session(SessionLocal) as session:
+        repo = SubAdminRepository(session)
+        perms = repo.get_permissions(username)
+    return set(perms) if perms else None
+
+
+def _user_has_permission(permissions: set[str] | None, permission: str) -> bool:
+    """Check if user has permission. None = main admin (all perms)."""
+    if permissions is None:
+        return True
+    return permission in permissions
 
 
 def is_main_admin(update: Update, admin_chat_id: str, admin_username: str) -> bool:
@@ -80,17 +154,37 @@ def is_admin(update: Update, admin_chat_id: str, admin_username: str, sub_admin_
     return user_username in sub_admin_usernames
 
 
-def build_main_menu_keyboard(is_main_admin_flag: bool) -> InlineKeyboardMarkup:
-    """Build the main menu keyboard. Main admin sees extra Manage admins button."""
-    keyboard = [
-        [InlineKeyboardButton("Upload videos", callback_data=CB_UPLOAD)],
-        [InlineKeyboardButton("Schedule uploads", callback_data=CB_SCHEDULE)],
-        [InlineKeyboardButton("View scheduled tasks", callback_data=CB_VIEW)],
-    ]
-    if is_main_admin_flag:
+def build_main_menu_keyboard(
+    is_main_admin_flag: bool,
+    sub_admin_permissions: set[str] | None = None,
+) -> InlineKeyboardMarkup:
+    """Build the main menu keyboard. Filter by permissions for sub-admins."""
+    perms = None if is_main_admin_flag else sub_admin_permissions
+    keyboard = []
+    if _user_has_permission(perms, PERM_UPLOAD_VIDEOS):
+        keyboard.append([InlineKeyboardButton("Upload videos", callback_data=CB_UPLOAD)])
+    if _user_has_permission(perms, PERM_SCHEDULE_UPLOADS):
+        keyboard.append([InlineKeyboardButton("Schedule uploads", callback_data=CB_SCHEDULE)])
+    if _user_has_permission(perms, PERM_VIEW_SCHEDULED_TASKS):
+        keyboard.append([InlineKeyboardButton("View scheduled tasks", callback_data=CB_VIEW)])
+    if _user_has_permission(perms, PERM_MANAGE_ADMINS):
         keyboard.append([InlineKeyboardButton("Manage admins", callback_data=CB_MANAGE_ADMINS)])
+    if _user_has_permission(perms, PERM_MANAGE_CREDS):
         keyboard.append([InlineKeyboardButton("Manage credentials", callback_data=CB_MANAGE_CREDS)])
     return InlineKeyboardMarkup(keyboard)
+
+
+def _get_current_user_permissions(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> tuple[bool, set[str] | None]:
+    """Return (is_main_admin, sub_admin_permissions). sub_admin_permissions is None for main admin."""
+    admin_chat_id = context.bot_data["admin_chat_id"]
+    admin_username = context.bot_data["admin_username"]
+    if is_main_admin(update, admin_chat_id, admin_username):
+        return True, None
+    user_username = (update.effective_user.username or "").lower() if update.effective_user else ""
+    perms = _get_sub_admin_permissions(context, user_username)
+    return False, perms or set()
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -100,10 +194,10 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     sub_admin_usernames = _get_sub_admin_usernames(context)
     if not is_admin(update, admin_chat_id, admin_username, sub_admin_usernames):
         return
-    main_admin = is_main_admin(update, admin_chat_id, admin_username)
+    main_admin, sub_perms = _get_current_user_permissions(update, context)
     await update.message.reply_text(
         "Welcome! Choose an action:",
-        reply_markup=build_main_menu_keyboard(main_admin),
+        reply_markup=build_main_menu_keyboard(main_admin, sub_perms),
     )
 
 
@@ -113,6 +207,7 @@ def _build_manage_admins_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("Add sub-admin", callback_data=CB_ADD_ADMIN)],
         [InlineKeyboardButton("Remove sub-admin", callback_data=CB_REMOVE_ADMIN)],
         [InlineKeyboardButton("List sub-admins", callback_data=CB_LIST_ADMINS)],
+        [InlineKeyboardButton("← Back", callback_data=CB_BACK)],
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -124,6 +219,7 @@ def _build_manage_creds_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("Add Instagram account", callback_data=CB_ADD_INSTA)],
         [InlineKeyboardButton("List Gemini keys", callback_data=CB_LIST_GEMINI)],
         [InlineKeyboardButton("List Instagram accounts", callback_data=CB_LIST_INSTA)],
+        [InlineKeyboardButton("← Back", callback_data=CB_BACK)],
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -148,118 +244,180 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     query = update.callback_query
     await query.answer()
 
-    main_admin = is_main_admin(update, admin_chat_id, admin_username)
+    main_admin, sub_perms = _get_current_user_permissions(update, context)
+    user_perms = None if main_admin else sub_perms
     data = query.data
 
+    if data == CB_BACK:
+        await query.edit_message_text(
+            "Choose an action:",
+            reply_markup=build_main_menu_keyboard(main_admin, sub_perms),
+        )
+        return ConversationHandler.END
+
     if data == CB_MANAGE_CREDS:
-        if not main_admin:
+        if not _user_has_permission(user_perms, PERM_MANAGE_CREDS):
             return ConversationHandler.END
         await query.edit_message_text(
             "Manage credentials:", reply_markup=_build_manage_creds_keyboard()
         )
         return ConversationHandler.END
     elif data == CB_ADD_GEMINI:
-        if not main_admin:
+        if not _user_has_permission(user_perms, PERM_MANAGE_CREDS):
             return ConversationHandler.END
         await query.edit_message_text("Send your Gemini API key:")
         return ADD_GEMINI_KEY
     elif data == CB_ADD_INSTA:
-        if not main_admin:
+        if not _user_has_permission(user_perms, PERM_MANAGE_CREDS):
             return ConversationHandler.END
         await query.edit_message_text("Send Instagram username:")
         return ADD_INSTA_USERNAME
     elif data == CB_LIST_GEMINI:
-        if not main_admin:
+        if not _user_has_permission(user_perms, PERM_MANAGE_CREDS):
             return ConversationHandler.END
         await _show_gemini_keys(query, context)
         return ConversationHandler.END
     elif data == CB_LIST_INSTA:
-        if not main_admin:
+        if not _user_has_permission(user_perms, PERM_MANAGE_CREDS):
             return ConversationHandler.END
         await _show_instagram_accounts(query, context)
         return ConversationHandler.END
     elif data and data.startswith(CB_REMOVE_GEMINI_PREFIX):
-        if not main_admin:
+        if not _user_has_permission(user_perms, PERM_MANAGE_CREDS):
             return ConversationHandler.END
         try:
             key_id = int(data[len(CB_REMOVE_GEMINI_PREFIX) :])
             SessionLocal = context.bot_data["SessionLocal"]
             with get_db_session(SessionLocal) as session:
                 repo = GeminiKeyRepository(session)
+                back_mk = InlineKeyboardMarkup([[InlineKeyboardButton("← Back", callback_data=CB_BACK)]])
                 if repo.remove(key_id):
-                    await query.edit_message_text(f"Removed Gemini key {key_id}.")
+                    await query.edit_message_text(f"Removed Gemini key {key_id}.", reply_markup=back_mk)
                 else:
-                    await query.edit_message_text("Key not found.")
+                    await query.edit_message_text("Key not found.", reply_markup=back_mk)
         except ValueError:
-            await query.edit_message_text("Invalid key ID.")
+            await query.edit_message_text("Invalid key ID.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("← Back", callback_data=CB_BACK)]]))
         return ConversationHandler.END
     elif data and data.startswith(CB_REMOVE_INSTA_PREFIX):
-        if not main_admin:
+        if not _user_has_permission(user_perms, PERM_MANAGE_CREDS):
             return ConversationHandler.END
         try:
             acc_id = int(data[len(CB_REMOVE_INSTA_PREFIX) :])
             SessionLocal = context.bot_data["SessionLocal"]
             with get_db_session(SessionLocal) as session:
                 repo = InstagramAccountRepository(session)
+                back_mk = InlineKeyboardMarkup([[InlineKeyboardButton("← Back", callback_data=CB_BACK)]])
                 if repo.remove(acc_id):
-                    await query.edit_message_text(f"Removed Instagram account {acc_id}.")
+                    await query.edit_message_text(f"Removed Instagram account {acc_id}.", reply_markup=back_mk)
                 else:
-                    await query.edit_message_text("Account not found.")
+                    await query.edit_message_text("Account not found.", reply_markup=back_mk)
         except ValueError:
-            await query.edit_message_text("Invalid account ID.")
+            await query.edit_message_text(
+                "Invalid account ID.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("← Back", callback_data=CB_BACK)]]),
+            )
         return ConversationHandler.END
 
     if data == CB_MANAGE_ADMINS:
-        if not main_admin:
+        if not _user_has_permission(user_perms, PERM_MANAGE_ADMINS):
             return ConversationHandler.END
         await query.edit_message_text("Manage admins:", reply_markup=_build_manage_admins_keyboard())
         return ConversationHandler.END
     elif data == CB_ADD_ADMIN:
-        if not main_admin:
+        if not _user_has_permission(user_perms, PERM_MANAGE_ADMINS):
             return ConversationHandler.END
         await query.edit_message_text("Send the username to add (without @):")
         return ADD_ADMIN_USERNAME
     elif data == CB_REMOVE_ADMIN:
-        if not main_admin:
+        if not _user_has_permission(user_perms, PERM_MANAGE_ADMINS):
             return ConversationHandler.END
         await query.edit_message_text("Send the username to remove:")
         return REMOVE_ADMIN_USERNAME
     elif data == CB_LIST_ADMINS:
-        if not main_admin:
+        if not _user_has_permission(user_perms, PERM_MANAGE_ADMINS):
             return ConversationHandler.END
         await _show_sub_admins(query, context)
         return ConversationHandler.END
 
     if data == CB_UPLOAD:
+        if not _user_has_permission(user_perms, PERM_UPLOAD_VIDEOS):
+            return ConversationHandler.END
         await query.edit_message_text(
             "Send video URLs (comma or newline separated):"
         )
         context.user_data["action"] = "upload"
         return UPLOAD_URLS
     elif data == CB_SCHEDULE:
+        if not _user_has_permission(user_perms, PERM_SCHEDULE_UPLOADS):
+            return ConversationHandler.END
         await query.edit_message_text(
             "Send video URLs (comma or newline separated):"
         )
         context.user_data["action"] = "schedule"
         return SCHEDULE_URLS
     elif data == CB_VIEW:
+        if not _user_has_permission(user_perms, PERM_VIEW_SCHEDULED_TASKS):
+            return ConversationHandler.END
         await _show_scheduled_tasks(query, context)
         return ConversationHandler.END
 
     return ConversationHandler.END
 
 
+def _format_permissions_display(perms: list[str]) -> str:
+    """Format permissions for display, e.g. 'Full access' or 'Upload, Schedule, View'."""
+    if set(perms) >= set(ALL_PERMISSIONS):
+        return "Full access"
+    labels = {
+        PERM_UPLOAD_VIDEOS: "Upload",
+        PERM_SCHEDULE_UPLOADS: "Schedule",
+        PERM_VIEW_SCHEDULED_TASKS: "View",
+        PERM_MANAGE_ADMINS: "Manage admins",
+        PERM_MANAGE_CREDS: "Manage creds",
+    }
+    return ", ".join(labels.get(p, p) for p in perms)
+
+
+def _build_permission_picker_keyboard(selected: set[str]) -> InlineKeyboardMarkup:
+    """Build keyboard for permission selection with checkmarks."""
+    def btn(label: str, cb: str, is_on: bool) -> InlineKeyboardButton:
+        prefix = "✓ " if is_on else ""
+        return InlineKeyboardButton(f"{prefix}{label}", callback_data=cb)
+
+    keyboard = [
+        [btn("Full access", CB_PERM_FULL, selected >= set(ALL_PERMISSIONS))],
+        [
+            btn("Upload", CB_PERM_UPLOAD, PERM_UPLOAD_VIDEOS in selected),
+            btn("Schedule", CB_PERM_SCHEDULE, PERM_SCHEDULE_UPLOADS in selected),
+            btn("View", CB_PERM_VIEW, PERM_VIEW_SCHEDULED_TASKS in selected),
+        ],
+        [
+            btn("Manage admins", CB_PERM_MANAGE_ADMINS, PERM_MANAGE_ADMINS in selected),
+            btn("Manage creds", CB_PERM_MANAGE_CREDS, PERM_MANAGE_CREDS in selected),
+        ],
+        [InlineKeyboardButton("Done – Add sub-admin", callback_data=CB_PERM_DONE)],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
 async def _show_sub_admins(query, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show list of sub-admins."""
+    """Show list of sub-admins with their permissions."""
     SessionLocal = context.bot_data["SessionLocal"]
     with get_db_session(SessionLocal) as session:
         repo = SubAdminRepository(session)
-        usernames = repo.list_all()
-    if not usernames:
-        await query.edit_message_text("No sub-admins.")
+        admins = repo.list_all()
+    if not admins:
+        await query.edit_message_text(
+            "No sub-admins.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("← Back", callback_data=CB_BACK)]]),
+        )
         return
-    text = "Sub-admins:\n\n" + "\n".join(f"• @{u}" for u in usernames)
-    await query.edit_message_text(text)
+    lines = [f"• @{u} ({_format_permissions_display(p)})" for u, p in admins]
+    text = "Sub-admins:\n\n" + "\n".join(lines)
+    await query.edit_message_text(
+        text,
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("← Back", callback_data=CB_BACK)]]),
+    )
 
 
 async def _show_gemini_keys(query, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -269,12 +427,16 @@ async def _show_gemini_keys(query, context: ContextTypes.DEFAULT_TYPE) -> None:
         repo = GeminiKeyRepository(session)
         keys = repo.list_all_ordered()
     if not keys:
-        await query.edit_message_text("No Gemini keys. Add one to get started.")
+        await query.edit_message_text(
+            "No Gemini keys. Add one to get started.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("← Back", callback_data=CB_BACK)]]),
+        )
         return
     keyboard = [
         [InlineKeyboardButton(f"Key #{kid} - Remove", callback_data=f"{CB_REMOVE_GEMINI_PREFIX}{kid}")]
         for kid, _ in keys
     ]
+    keyboard.append([InlineKeyboardButton("← Back", callback_data=CB_BACK)])
     text = "Gemini keys (tried in order for failover):\n\n" + "\n".join(f"• Key #{kid}" for kid, _ in keys)
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -286,12 +448,16 @@ async def _show_instagram_accounts(query, context: ContextTypes.DEFAULT_TYPE) ->
         repo = InstagramAccountRepository(session)
         accounts = repo.list_all()
     if not accounts:
-        await query.edit_message_text("No Instagram accounts. Add one to get started.")
+        await query.edit_message_text(
+            "No Instagram accounts. Add one to get started.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("← Back", callback_data=CB_BACK)]]),
+        )
         return
     keyboard = [
         [InlineKeyboardButton(f"@{username} - Remove", callback_data=f"{CB_REMOVE_INSTA_PREFIX}{acc_id}")]
         for acc_id, username in accounts
     ]
+    keyboard.append([InlineKeyboardButton("← Back", callback_data=CB_BACK)])
     text = "Instagram accounts:\n\n" + "\n".join(f"• @{username} (ID: {acc_id})" for acc_id, username in accounts)
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -303,18 +469,24 @@ async def _show_scheduled_tasks(query, context: ContextTypes.DEFAULT_TYPE) -> No
         repo = VideoJobRepository(session)
         jobs = repo.get_all_pending_and_scheduled()
 
+    back_btn = InlineKeyboardMarkup([[InlineKeyboardButton("← Back", callback_data=CB_BACK)]])
     if not jobs:
-        await query.edit_message_text("No pending or scheduled tasks.")
+        await query.edit_message_text("No pending or scheduled tasks.", reply_markup=back_btn)
         return
 
     lines = []
     for j in jobs[:20]:
-        schedule_str = j.schedule_time.strftime("%Y-%m-%d %H:%M") if j.schedule_time else "ASAP"
+        if j.schedule_time:
+            dt = j.schedule_time if j.schedule_time.tzinfo else j.schedule_time.replace(tzinfo=timezone.utc)
+            bd = dt.astimezone(BANGLADESH_TZ)
+            schedule_str = bd.strftime("%b %d, %I:%M %p")
+        else:
+            schedule_str = "ASAP"
         lines.append(f"• [{j.id}] {j.original_url[:50]}... @ {schedule_str}")
     text = "Scheduled tasks:\n\n" + "\n".join(lines)
     if len(jobs) > 20:
         text += f"\n\n... and {len(jobs) - 20} more"
-    await query.edit_message_text(text)
+    await query.edit_message_text(text, reply_markup=back_btn)
 
 
 async def add_gemini_key_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -379,26 +551,106 @@ async def add_insta_password_received(update: Update, context: ContextTypes.DEFA
 
 
 async def add_admin_username_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle username for adding sub-admin."""
+    """Handle username for adding sub-admin - then show permission picker."""
     admin_chat_id = context.bot_data["admin_chat_id"]
     admin_username = context.bot_data["admin_username"]
     if not is_main_admin(update, admin_chat_id, admin_username):
         return ConversationHandler.END
-    username = (update.message.text or "").strip()
+    username = (update.message.text or "").strip().lower().lstrip("@")
     if not username:
         await update.message.reply_text("Username cannot be empty. Send the username to add (without @):")
         return ADD_ADMIN_USERNAME
     SessionLocal = context.bot_data["SessionLocal"]
-    try:
-        with get_db_session(SessionLocal) as session:
-            repo = SubAdminRepository(session)
-            repo.add(username)
-        await update.message.reply_text(f"Added @{username.lower().lstrip('@')} as sub-admin.")
-    except ValueError as e:
-        await update.message.reply_text(str(e))
-    except Exception:
-        await update.message.reply_text("Failed to add (username may already exist).")
-    return ConversationHandler.END
+    with get_db_session(SessionLocal) as session:
+        repo = SubAdminRepository(session)
+        if repo.exists(username):
+            await update.message.reply_text(f"@{username} is already a sub-admin.")
+            return ConversationHandler.END
+    context.user_data["new_admin_username"] = username
+    context.user_data["new_admin_permissions"] = set(ALL_PERMISSIONS)  # Default: full access
+    await update.message.reply_text(
+        f"Select permissions for @{username}:",
+        reply_markup=_build_permission_picker_keyboard(set(ALL_PERMISSIONS)),
+    )
+    return ADD_ADMIN_PERMISSIONS
+
+
+async def add_admin_permissions_callback(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    """Handle permission picker callbacks (toggle/done)."""
+    admin_chat_id = context.bot_data["admin_chat_id"]
+    admin_username = context.bot_data["admin_username"]
+    if not is_main_admin(update, admin_chat_id, admin_username):
+        return ConversationHandler.END
+    query = update.callback_query
+    await query.answer()
+
+    username = context.user_data.get("new_admin_username", "")
+    selected = set(context.user_data.get("new_admin_permissions", set()))
+
+    data = query.data or ""
+    if data == CB_PERM_DONE:
+        if not username:
+            await query.edit_message_text("Session expired. Start over from Manage admins.")
+            context.user_data.pop("new_admin_username", None)
+            context.user_data.pop("new_admin_permissions", None)
+            return ConversationHandler.END
+        SessionLocal = context.bot_data["SessionLocal"]
+        try:
+            with get_db_session(SessionLocal) as session:
+                repo = SubAdminRepository(session)
+                repo.add(username, list(selected))
+            perms_str = _format_permissions_display(list(selected))
+            await query.edit_message_text(
+                f"Added @{username} as sub-admin ({perms_str}).",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("← Back", callback_data=CB_BACK)]]),
+            )
+        except ValueError as e:
+            await query.edit_message_text(str(e))
+        except Exception:
+            await query.edit_message_text("Failed to add (username may already exist).")
+        context.user_data.pop("new_admin_username", None)
+        context.user_data.pop("new_admin_permissions", None)
+        return ConversationHandler.END
+
+    if data == CB_PERM_FULL:
+        if selected >= set(ALL_PERMISSIONS):
+            selected.clear()
+        else:
+            selected = set(ALL_PERMISSIONS)
+    elif data == CB_PERM_UPLOAD:
+        if PERM_UPLOAD_VIDEOS in selected:
+            selected.discard(PERM_UPLOAD_VIDEOS)
+        else:
+            selected.add(PERM_UPLOAD_VIDEOS)
+    elif data == CB_PERM_SCHEDULE:
+        if PERM_SCHEDULE_UPLOADS in selected:
+            selected.discard(PERM_SCHEDULE_UPLOADS)
+        else:
+            selected.add(PERM_SCHEDULE_UPLOADS)
+    elif data == CB_PERM_VIEW:
+        if PERM_VIEW_SCHEDULED_TASKS in selected:
+            selected.discard(PERM_VIEW_SCHEDULED_TASKS)
+        else:
+            selected.add(PERM_VIEW_SCHEDULED_TASKS)
+    elif data == CB_PERM_MANAGE_ADMINS:
+        if PERM_MANAGE_ADMINS in selected:
+            selected.discard(PERM_MANAGE_ADMINS)
+        else:
+            selected.add(PERM_MANAGE_ADMINS)
+    elif data == CB_PERM_MANAGE_CREDS:
+        if PERM_MANAGE_CREDS in selected:
+            selected.discard(PERM_MANAGE_CREDS)
+        else:
+            selected.add(PERM_MANAGE_CREDS)
+
+    context.user_data["new_admin_permissions"] = selected
+    await query.edit_message_text(
+        f"Select permissions for @{username}:",
+        reply_markup=_build_permission_picker_keyboard(selected),
+    )
+    return ADD_ADMIN_PERMISSIONS
 
 
 async def remove_admin_username_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -518,7 +770,8 @@ async def schedule_account_picked(update: Update, context: ContextTypes.DEFAULT_
     acc_id = int(data[len(CB_ACCOUNT_PREFIX) :])
     context.user_data["instagram_account_id"] = acc_id
     await query.edit_message_text(
-        "Send schedule time (e.g. 2025-03-08 14:00 or 2025-03-08 14:00:00):"
+        "Send schedule time (Bangladesh time, year = current):\n"
+        "e.g. 3 8 2:30 pm or 12-25 9:00 am (month day time am/pm)"
     )
     return SCHEDULE_TIME
 
@@ -532,16 +785,18 @@ async def schedule_time_received(update: Update, context: ContextTypes.DEFAULT_T
         return ConversationHandler.END
 
     text = (update.message.text or "").strip()
-    try:
-        if len(text) == 16:  # 2025-03-08 14:00
-            schedule_time = datetime.strptime(text, "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
-        else:
-            schedule_time = datetime.strptime(text, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-    except ValueError:
-        await update.message.reply_text(
-            "Invalid format. Use YYYY-MM-DD HH:MM or YYYY-MM-DD HH:MM:SS"
-        )
-        return SCHEDULE_TIME
+    schedule_time = _parse_schedule_time_bd(text)
+    if not schedule_time:
+        try:
+            if len(text) == 16:  # 2025-03-08 14:00
+                schedule_time = datetime.strptime(text, "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+            else:
+                schedule_time = datetime.strptime(text, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        except ValueError:
+            await update.message.reply_text(
+                "Invalid format. Use: month day time am/pm (e.g. 3 8 2:30 pm or 12-25 9:00 am)"
+            )
+            return SCHEDULE_TIME
 
     urls = context.user_data.get("urls", [])
     instagram_account_id = context.user_data.get("instagram_account_id")
@@ -553,8 +808,9 @@ async def schedule_time_received(update: Update, context: ContextTypes.DEFAULT_T
             repo, urls, schedule_time=schedule_time, instagram_account_id=instagram_account_id
         )
 
+    bd_time = schedule_time.astimezone(BANGLADESH_TZ)
     await update.message.reply_text(
-        f"Scheduled {len(job_ids)} job(s) for Instagram at {schedule_time}.\nIDs: {job_ids}"
+        f"Scheduled {len(job_ids)} job(s) for Instagram at {bd_time.strftime('%b %d, %Y %I:%M %p')} (BD time).\nIDs: {job_ids}"
     )
     context.user_data.clear()
     return ConversationHandler.END
@@ -569,6 +825,31 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return ConversationHandler.END
     context.user_data.clear()
     await update.message.reply_text("Cancelled.")
+    return ConversationHandler.END
+
+
+async def start_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Fallback: /start clears conversation state and shows main menu."""
+    context.user_data.clear()
+    await start_command(update, context)
+    return ConversationHandler.END
+
+
+async def callback_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Fallback: button click while in a flow - reset to main menu."""
+    query = update.callback_query
+    await query.answer()
+    context.user_data.clear()
+    admin_chat_id = context.bot_data["admin_chat_id"]
+    admin_username = context.bot_data["admin_username"]
+    sub_admin_usernames = _get_sub_admin_usernames(context)
+    if not is_admin(update, admin_chat_id, admin_username, sub_admin_usernames):
+        return ConversationHandler.END
+    main_admin, sub_perms = _get_current_user_permissions(update, context)
+    await query.edit_message_text(
+        "Choose an action:",
+        reply_markup=build_main_menu_keyboard(main_admin, sub_perms),
+    )
     return ConversationHandler.END
 
 
@@ -623,6 +904,9 @@ def create_application(
             ADD_ADMIN_USERNAME: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, add_admin_username_received),
             ],
+            ADD_ADMIN_PERMISSIONS: [
+                CallbackQueryHandler(add_admin_permissions_callback),
+            ],
             REMOVE_ADMIN_USERNAME: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, remove_admin_username_received),
             ],
@@ -636,11 +920,15 @@ def create_application(
                 MessageHandler(filters.TEXT & ~filters.COMMAND, add_insta_password_received),
             ],
         },
-        fallbacks=[CommandHandler("cancel", cancel_command)],
+        fallbacks=[
+            CommandHandler("cancel", cancel_command),
+            CommandHandler("start", start_fallback),
+            CallbackQueryHandler(callback_fallback),
+        ],
     )
 
-    app.add_handler(CommandHandler("start", start_command))
     app.add_handler(conv_handler)
+    app.add_handler(CommandHandler("start", start_command))
     app.add_error_handler(_error_handler)
 
     return app

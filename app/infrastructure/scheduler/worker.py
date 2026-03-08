@@ -26,6 +26,7 @@ def run_worker(
     SessionLocal,
     video_storage_path: str,
     gemini_model: str = "gemini-2.5-flash",
+    yt_cookies_path: str = "cookies.txt",
     stop_event: threading.Event | None = None,
 ) -> None:
     """
@@ -34,7 +35,10 @@ def run_worker(
     Loads Gemini keys and Instagram accounts from DB. Processes jobs using
     credentials from DB.
     """
-    downloader = YtDlpDownloader(storage_path=video_storage_path)
+    downloader = YtDlpDownloader(
+        storage_path=video_storage_path,
+        cookies_path=yt_cookies_path,
+    )
 
     if stop_event is None:
         stop_event = threading.Event()

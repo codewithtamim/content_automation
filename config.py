@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     # Storage
     video_storage_path: str = "/tmp/videos"
 
+    # YouTube cookies (optional, for bypassing bot detection)
+    # Path to Netscape-format cookies file. Default: cookies.txt in project root
+    yt_cookies_path: str = "cookies.txt"
+
     # Logging
     log_level: str = "INFO"
 

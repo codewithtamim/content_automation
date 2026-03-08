@@ -6,6 +6,8 @@ services:
     env_file: .env
     environment:
       PYTHONUNBUFFERED: 1
+    volumes:
+      - ./cookies.txt:/app/cookies.txt
     depends_on:
       db:
         condition: service_healthy
