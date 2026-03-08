@@ -20,13 +20,22 @@ def create_engine_and_session(database_url: str):
     """Create engine and session factory."""
     connect_args = {"check_same_thread": False}
     if database_url.startswith("sqlite"):
-        connect_args["timeout"] = 30  # Wait up to 30s for lock (avoids "database is locked")
+        connect_args["timeout"] = 60  # Wait up to 60s for lock (avoids "database is locked")
     engine = create_engine(
         database_url,
         connect_args=connect_args,
         pool_pre_ping=True,
     )
     if database_url.startswith("sqlite"):
+        from sqlalchemy import event
+
+        @event.listens_for(engine, "connect")
+        def _set_sqlite_pragma(dbapi_conn, connection_record):
+            cursor = dbapi_conn.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA busy_timeout=60000")  # 60s in ms
+            cursor.close()
+
         with engine.connect() as conn:
             conn.execute(text("PRAGMA journal_mode=WAL"))
             conn.commit()

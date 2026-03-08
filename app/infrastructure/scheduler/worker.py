@@ -184,6 +184,7 @@ def run_worker(
                             instagram_uploader=instagram_uploader,
                             generate_metadata_fn=_generate_metadata,
                             logo_path=watermark_path,
+                            SessionLocal=SessionLocal,
                         )
                         logger.info("Job %s completed successfully", job.id)
                         _notify_admin_job_completed(
