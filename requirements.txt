@@ -1,19 +1,19 @@
 # Telegram Bot
-python-telegram-bot>=20.0
+python-telegram-bot>=22.6
 
 # Video Download
 yt-dlp>=2026.3.3
 
 # Social Media Uploaders
-instagrapi>=2.0.0
+instagrapi>=2.3.0
 
 # AI
-google-genai>=1.0.0
+google-genai>=1.66.0
 
 # Database
-sqlalchemy>=2.0.0
-psycopg2-binary>=2.9.0
+sqlalchemy>=2.0.47
+psycopg2-binary>=2.9.11
 
 # Config
-pydantic-settings>=2.0.0
+pydantic-settings>=2.13.1
 

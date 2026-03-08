@@ -196,7 +196,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
     main_admin, sub_perms = _get_current_user_permissions(update, context)
     await update.message.reply_text(
-        "Welcome! Choose an action:",
+        "Hey boss! 👋 What would you like to do?",
         reply_markup=build_main_menu_keyboard(main_admin, sub_perms),
     )
 
@@ -250,7 +250,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     if data == CB_BACK:
         await query.edit_message_text(
-            "Choose an action:",
+            "Hey boss! 👋 What would you like to do?",
             reply_markup=build_main_menu_keyboard(main_admin, sub_perms),
         )
         return ConversationHandler.END
@@ -292,9 +292,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 repo = GeminiKeyRepository(session)
                 back_mk = InlineKeyboardMarkup([[InlineKeyboardButton("← Back", callback_data=CB_BACK)]])
                 if repo.remove(key_id):
-                    await query.edit_message_text(f"Removed Gemini key {key_id}.", reply_markup=back_mk)
+                    await query.edit_message_text(f"Removed Gemini key {key_id}. ✓", reply_markup=back_mk)
                 else:
-                    await query.edit_message_text("Key not found.", reply_markup=back_mk)
+                    await query.edit_message_text("That key wasn't found.", reply_markup=back_mk)
         except ValueError:
             await query.edit_message_text("Invalid key ID.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("← Back", callback_data=CB_BACK)]]))
         return ConversationHandler.END
@@ -308,9 +308,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 repo = InstagramAccountRepository(session)
                 back_mk = InlineKeyboardMarkup([[InlineKeyboardButton("← Back", callback_data=CB_BACK)]])
                 if repo.remove(acc_id):
-                    await query.edit_message_text(f"Removed Instagram account {acc_id}.", reply_markup=back_mk)
+                    await query.edit_message_text(f"Removed Instagram account {acc_id}. ✓", reply_markup=back_mk)
                 else:
-                    await query.edit_message_text("Account not found.", reply_markup=back_mk)
+                    await query.edit_message_text("That account wasn't found.", reply_markup=back_mk)
         except ValueError:
             await query.edit_message_text(
                 "Invalid account ID.",
@@ -343,7 +343,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         if not _user_has_permission(user_perms, PERM_UPLOAD_VIDEOS):
             return ConversationHandler.END
         await query.edit_message_text(
-            "Send video URLs (comma or newline separated):"
+            "Send me the video URLs (comma or newline separated):"
         )
         context.user_data["action"] = "upload"
         return UPLOAD_URLS
@@ -351,7 +351,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         if not _user_has_permission(user_perms, PERM_SCHEDULE_UPLOADS):
             return ConversationHandler.END
         await query.edit_message_text(
-            "Send video URLs (comma or newline separated):"
+            "Send me the video URLs (comma or newline separated):"
         )
         context.user_data["action"] = "schedule"
         return SCHEDULE_URLS
@@ -408,7 +408,7 @@ async def _show_sub_admins(query, context: ContextTypes.DEFAULT_TYPE) -> None:
         admins = repo.list_all()
     if not admins:
         await query.edit_message_text(
-            "No sub-admins.",
+            "No sub-admins yet. Add one below!",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("← Back", callback_data=CB_BACK)]]),
         )
         return
@@ -428,7 +428,7 @@ async def _show_gemini_keys(query, context: ContextTypes.DEFAULT_TYPE) -> None:
         keys = repo.list_all_ordered()
     if not keys:
         await query.edit_message_text(
-            "No Gemini keys. Add one to get started.",
+            "No Gemini keys yet. Add one to get started!",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("← Back", callback_data=CB_BACK)]]),
         )
         return
@@ -449,7 +449,7 @@ async def _show_instagram_accounts(query, context: ContextTypes.DEFAULT_TYPE) ->
         accounts = repo.list_all()
     if not accounts:
         await query.edit_message_text(
-            "No Instagram accounts. Add one to get started.",
+            "No Instagram accounts yet. Add one to get started!",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("← Back", callback_data=CB_BACK)]]),
         )
         return
@@ -471,7 +471,7 @@ async def _show_scheduled_tasks(query, context: ContextTypes.DEFAULT_TYPE) -> No
 
     back_btn = InlineKeyboardMarkup([[InlineKeyboardButton("← Back", callback_data=CB_BACK)]])
     if not jobs:
-        await query.edit_message_text("No pending or scheduled tasks.", reply_markup=back_btn)
+        await query.edit_message_text("No pending or scheduled tasks. All clear! ✓", reply_markup=back_btn)
         return
 
     lines = []
@@ -506,9 +506,9 @@ async def add_gemini_key_received(update: Update, context: ContextTypes.DEFAULT_
             keys = repo.list_all_ordered()
             priority = len(keys)
             repo.add(key, priority=priority)
-        await update.message.reply_text("Added Gemini API key. It will be tried in failover order.")
+        await update.message.reply_text("Got it! Gemini key added. ✓")
     except Exception:
-        await update.message.reply_text("Failed to add key.")
+        await update.message.reply_text("Couldn't add the key. Try again?")
     return ConversationHandler.END
 
 
@@ -543,9 +543,9 @@ async def add_insta_password_received(update: Update, context: ContextTypes.DEFA
         with get_db_session(SessionLocal) as session:
             repo = InstagramAccountRepository(session)
             repo.add(username, password)
-        await update.message.reply_text(f"Added Instagram account @{username}.")
+        await update.message.reply_text(f"Added @{username} – Instagram account ready! ✓")
     except Exception:
-        await update.message.reply_text("Failed to add (username may already exist).")
+        await update.message.reply_text("Couldn't add – username may already exist.")
     context.user_data.pop("insta_username", None)
     return ConversationHandler.END
 
@@ -603,13 +603,13 @@ async def add_admin_permissions_callback(
                 repo.add(username, list(selected))
             perms_str = _format_permissions_display(list(selected))
             await query.edit_message_text(
-                f"Added @{username} as sub-admin ({perms_str}).",
+                f"Done! @{username} is now a sub-admin with {perms_str}. ✓",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("← Back", callback_data=CB_BACK)]]),
             )
         except ValueError as e:
             await query.edit_message_text(str(e))
         except Exception:
-            await query.edit_message_text("Failed to add (username may already exist).")
+            await query.edit_message_text("Couldn't add – username may already exist.")
         context.user_data.pop("new_admin_username", None)
         context.user_data.pop("new_admin_permissions", None)
         return ConversationHandler.END
@@ -668,9 +668,9 @@ async def remove_admin_username_received(update: Update, context: ContextTypes.D
         repo = SubAdminRepository(session)
         removed = repo.remove(username)
     if removed:
-        await update.message.reply_text(f"Removed @{username.lower().lstrip('@')} from sub-admins.")
+        await update.message.reply_text(f"Removed @{username.lower().lstrip('@')} from sub-admins. ✓")
     else:
-        await update.message.reply_text("Username not found in sub-admins.")
+        await update.message.reply_text("That user isn't a sub-admin.")
     return ConversationHandler.END
 
 
@@ -684,7 +684,7 @@ async def upload_urls_received(update: Update, context: ContextTypes.DEFAULT_TYP
 
     urls = parse_urls(update.message.text or "")
     if not urls:
-        await update.message.reply_text("No valid URLs found. Please send valid video URLs.")
+        await update.message.reply_text("Hmm, I couldn't find any valid URLs. Try sending video links (YouTube, Instagram, etc.)")
         return UPLOAD_URLS
 
     context.user_data["urls"] = urls
@@ -695,13 +695,13 @@ async def upload_urls_received(update: Update, context: ContextTypes.DEFAULT_TYP
 
     if not accounts:
         await update.message.reply_text(
-            "No Instagram accounts configured. Add one in Manage credentials (main admin only)."
+            "No Instagram accounts set up yet. Add one in Manage credentials (main admin only)."
         )
         context.user_data.clear()
         return ConversationHandler.END
 
     await update.message.reply_text(
-        "Pick Instagram account:",
+        "Which Instagram account should we use?",
         reply_markup=_build_account_picker_keyboard(accounts),
     )
     return UPLOAD_PICK_ACCOUNT
@@ -721,7 +721,7 @@ async def upload_account_picked(update: Update, context: ContextTypes.DEFAULT_TY
         repo = VideoJobRepository(session)
         job_ids = create_job(repo, urls, schedule_time=None, instagram_account_id=acc_id)
     await query.edit_message_text(
-        f"Created {len(job_ids)} job(s) for Instagram. Jobs will be processed shortly.\nIDs: {job_ids}"
+        f"Uploaded boss! 🎬 {len(job_ids)} video(s) queued – they'll be going live on Instagram shortly.\n\nJob IDs: {job_ids}"
     )
     context.user_data.clear()
     return ConversationHandler.END
@@ -737,7 +737,7 @@ async def schedule_urls_received(update: Update, context: ContextTypes.DEFAULT_T
 
     urls = parse_urls(update.message.text or "")
     if not urls:
-        await update.message.reply_text("No valid URLs found. Please send valid video URLs.")
+        await update.message.reply_text("Hmm, I couldn't find any valid URLs. Try sending video links (YouTube, Instagram, etc.)")
         return SCHEDULE_URLS
 
     context.user_data["urls"] = urls
@@ -748,13 +748,13 @@ async def schedule_urls_received(update: Update, context: ContextTypes.DEFAULT_T
 
     if not accounts:
         await update.message.reply_text(
-            "No Instagram accounts configured. Add one in Manage credentials (main admin only)."
+            "No Instagram accounts set up yet. Add one in Manage credentials (main admin only)."
         )
         context.user_data.clear()
         return ConversationHandler.END
 
     await update.message.reply_text(
-        "Pick Instagram account:",
+        "Which Instagram account should we use?",
         reply_markup=_build_account_picker_keyboard(accounts),
     )
     return SCHEDULE_PICK_ACCOUNT
@@ -770,8 +770,9 @@ async def schedule_account_picked(update: Update, context: ContextTypes.DEFAULT_
     acc_id = int(data[len(CB_ACCOUNT_PREFIX) :])
     context.user_data["instagram_account_id"] = acc_id
     await query.edit_message_text(
-        "Send schedule time (Bangladesh time, year = current):\n"
-        "e.g. 3 8 2:30 pm or 12-25 9:00 am (month day time am/pm)"
+        "When should we post? (Bangladesh time)\n\n"
+        "Format: month day time am/pm\n"
+        "e.g. 3 8 2:30 pm or 12-25 9:00 am"
     )
     return SCHEDULE_TIME
 
@@ -794,7 +795,8 @@ async def schedule_time_received(update: Update, context: ContextTypes.DEFAULT_T
                 schedule_time = datetime.strptime(text, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
         except ValueError:
             await update.message.reply_text(
-                "Invalid format. Use: month day time am/pm (e.g. 3 8 2:30 pm or 12-25 9:00 am)"
+                "Oops! Use this format: month day time am/pm\n"
+                "e.g. 3 8 2:30 pm or 12-25 9:00 am"
             )
             return SCHEDULE_TIME
 
@@ -810,7 +812,7 @@ async def schedule_time_received(update: Update, context: ContextTypes.DEFAULT_T
 
     bd_time = schedule_time.astimezone(BANGLADESH_TZ)
     await update.message.reply_text(
-        f"Scheduled {len(job_ids)} job(s) for Instagram at {bd_time.strftime('%b %d, %Y %I:%M %p')} (BD time).\nIDs: {job_ids}"
+        f"Done! 📅 {len(job_ids)} video(s) scheduled for {bd_time.strftime('%b %d, %Y %I:%M %p')} (BD time). They'll post automatically!\n\nJob IDs: {job_ids}"
     )
     context.user_data.clear()
     return ConversationHandler.END
@@ -824,7 +826,7 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not is_admin(update, admin_chat_id, admin_username, sub_admin_usernames):
         return ConversationHandler.END
     context.user_data.clear()
-    await update.message.reply_text("Cancelled.")
+    await update.message.reply_text("Cancelled. No worries!")
     return ConversationHandler.END
 
 
@@ -847,7 +849,7 @@ async def callback_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return ConversationHandler.END
     main_admin, sub_perms = _get_current_user_permissions(update, context)
     await query.edit_message_text(
-        "Choose an action:",
+        "Hey boss! 👋 What would you like to do?",
         reply_markup=build_main_menu_keyboard(main_admin, sub_perms),
     )
     return ConversationHandler.END
