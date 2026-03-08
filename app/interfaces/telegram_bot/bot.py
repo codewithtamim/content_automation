@@ -398,37 +398,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         )
         return ConversationHandler.END
 
-    if data == CB_CLEAR_ALL_JOBS:
-        if not _user_has_permission(user_perms, PERM_VIEW_SCHEDULED_TASKS):
-            await query.answer()
-            return ConversationHandler.END
-        await query.answer()
-        keyboard = [
-            [InlineKeyboardButton("Yes, clear all", callback_data=CB_CLEAR_ALL_JOBS_CONFIRM)],
-            [InlineKeyboardButton("← Cancel", callback_data=CB_VIEW)],
-        ]
-        await query.edit_message_text(
-            "Clear all jobs?\n\nThis will delete ALL jobs (pending, failed, completed).",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-        )
-        return ConversationHandler.END
-
-    if data == CB_CLEAR_ALL_JOBS_CONFIRM:
-        if not _user_has_permission(user_perms, PERM_VIEW_SCHEDULED_TASKS):
-            await query.answer("No permission", show_alert=True)
-            return ConversationHandler.END
-        try:
-            SessionLocal = context.bot_data["SessionLocal"]
-            with get_db_session(SessionLocal) as session:
-                repo = VideoJobRepository(session)
-                count = repo.delete_all()
-            await query.answer(f"Cleared {count} jobs")
-            await _show_scheduled_tasks(query, context)
-        except Exception as e:
-            logger.exception("Clear all jobs failed: %s", e)
-            await query.answer("Failed to clear jobs", show_alert=True)
-        return ConversationHandler.END
-
     if data == CB_MANAGE_CREDS:
         if not _user_has_permission(user_perms, PERM_MANAGE_CREDS):
             return ConversationHandler.END
@@ -1486,10 +1455,16 @@ async def start_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     return ConversationHandler.END
 
 
-async def clear_all_jobs_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def clear_all_jobs_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle Yes, clear all button."""
     query = update.callback_query
     if not query or not query.data:
+        return
+    admin_chat_id = context.bot_data.get("admin_chat_id")
+    admin_username = context.bot_data.get("admin_username")
+    sub_admin_usernames = _get_sub_admin_usernames(context)
+    if not is_admin(update, admin_chat_id, admin_username, sub_admin_usernames):
+        await query.answer()
         return
     try:
         SessionLocal = context.bot_data["SessionLocal"]
@@ -1501,6 +1476,28 @@ async def clear_all_jobs_callback(update: Update, context: ContextTypes.DEFAULT_
     except Exception as e:
         logger.exception("Clear all jobs failed: %s", e)
         await query.answer("Failed to clear jobs", show_alert=True)
+
+
+async def clear_all_jobs_show_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle Clear all jobs button - show confirmation."""
+    query = update.callback_query
+    if not query or not query.data:
+        return
+    admin_chat_id = context.bot_data.get("admin_chat_id")
+    admin_username = context.bot_data.get("admin_username")
+    sub_admin_usernames = _get_sub_admin_usernames(context)
+    if not is_admin(update, admin_chat_id, admin_username, sub_admin_usernames):
+        await query.answer()
+        return
+    await query.answer()
+    keyboard = [
+        [InlineKeyboardButton("Yes, clear all", callback_data=CB_CLEAR_ALL_JOBS_CONFIRM)],
+        [InlineKeyboardButton("← Cancel", callback_data=CB_VIEW)],
+    ]
+    await query.edit_message_text(
+        "Clear all jobs?\n\nThis will delete ALL jobs (pending, failed, completed).",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
 
 
 async def cancel_job_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1670,7 +1667,11 @@ def create_application(
     )
 
     app.add_handler(
-        CallbackQueryHandler(clear_all_jobs_callback, pattern=f"^{CB_CLEAR_ALL_JOBS_CONFIRM}$"),
+        CallbackQueryHandler(clear_all_jobs_show_confirm_callback, pattern=f"^{CB_CLEAR_ALL_JOBS}$"),
+        group=0,
+    )
+    app.add_handler(
+        CallbackQueryHandler(clear_all_jobs_confirm_callback, pattern=f"^{CB_CLEAR_ALL_JOBS_CONFIRM}$"),
         group=0,
     )
     app.add_handler(
