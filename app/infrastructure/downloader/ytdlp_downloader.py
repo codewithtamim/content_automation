@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 import yt_dlp
+from yt_dlp.utils import DownloadError, ExtractorError
 
 logger = logging.getLogger(__name__)
 
@@ -96,22 +97,45 @@ class YtDlpDownloader:
             "js_runtimes": _get_js_runtimes(),
         }
 
-        if (
+        has_cookies = (
             self.cookies_path
             and self.cookies_path.exists()
             and self.cookies_path.stat().st_size > 0
-        ):
+        )
+        if has_cookies:
             opts["cookiefile"] = str(self.cookies_path)
 
         if self.proxy:
             opts["proxy"] = self.proxy
 
         extracted_info = {}
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            if info:
-                extracted_info["title"] = info.get("title")
-                extracted_info["tags"] = info.get("tags") or []
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                if info:
+                    extracted_info["title"] = info.get("title")
+                    extracted_info["tags"] = info.get("tags") or []
+        except (DownloadError, ExtractorError) as e:
+            err_msg = str(e).lower()
+            if has_cookies and (
+                "signature solving failed" in err_msg
+                or "requested format is not available" in err_msg
+                or "only images are available" in err_msg
+            ):
+                logger.warning(
+                    "Download failed with cookies (signature/format issue), retrying without cookies: %s",
+                    e,
+                )
+                opts.pop("cookiefile", None)
+                for f in self.storage_path.glob(f"{job_id}.*"):
+                    f.unlink(missing_ok=True)
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
+                    if info:
+                        extracted_info["title"] = info.get("title")
+                        extracted_info["tags"] = info.get("tags") or []
+            else:
+                raise
 
         output_path = None
         for ext in ["mp4", "webm", "mkv", "m4a", "3gp", "flv"]:
