@@ -17,14 +17,14 @@ class Settings(BaseSettings):
     admin_telegram_chat_id: str
     admin_telegram_username: str
 
-    # Database
-    database_url: str
+    # Database (SQLite file)
+    database_url: str = "sqlite:///data/tiktok_automation.db"
 
     # AI model (keys stored in DB, set via bot)
     gemini_model: str = "gemini-2.5-flash"
 
     # Storage
-    video_storage_path: str = "/tmp/videos"
+    video_storage_path: str = "data/videos"
 
     # YouTube cookies (optional, for bypassing bot detection)
     # Path to Netscape-format cookies file. Default: cookies.txt in project root

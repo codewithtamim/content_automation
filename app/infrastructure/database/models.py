@@ -1,11 +1,29 @@
 """SQLAlchemy database models."""
 
+import json
 from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
-from sqlalchemy.dialects.postgresql import ARRAY
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.types import TypeDecorator
+
+
+class JSONList(TypeDecorator):
+    """Store Python lists as JSON text in SQLite."""
+
+    impl = Text
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if value is not None:
+            return json.dumps(value)
+        return None
+
+    def process_result_value(self, value, dialect):
+        if value is not None:
+            return json.loads(value)
+        return None
 
 
 class Base(DeclarativeBase):
@@ -29,9 +47,9 @@ class VideoJobModel(Base):
     schedule_time: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     local_path: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
     original_title: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    original_tags: Mapped[Optional[list]] = mapped_column(ARRAY(Text), nullable=True)
+    original_tags: Mapped[Optional[list]] = mapped_column(JSONList, nullable=True)
     generated_title: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    generated_tags: Mapped[Optional[list]] = mapped_column(ARRAY(Text), nullable=True)
+    generated_tags: Mapped[Optional[list]] = mapped_column(JSONList, nullable=True)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     submitted_by_username: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
@@ -45,7 +63,7 @@ class SubAdminModel(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     username: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
-    permissions: Mapped[Optional[list]] = mapped_column(ARRAY(Text), nullable=True)
+    permissions: Mapped[Optional[list]] = mapped_column(JSONList, nullable=True)
     added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
