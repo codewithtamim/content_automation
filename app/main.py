@@ -40,6 +40,7 @@ def main() -> None:
             "video_storage_path": settings.video_storage_path,
             "gemini_model": settings.gemini_model,
             "yt_cookies_path": settings.yt_cookies_path,
+            "yt_proxy": settings.yt_proxy,
             "stop_event": _worker_stop_event,
             "admin_telegram_chat_id": settings.admin_telegram_chat_id,
             "telegram_bot_token": settings.telegram_bot_token,

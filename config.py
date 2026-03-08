@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     # Path to Netscape-format cookies file. Default: cookies.txt in project root
     yt_cookies_path: str = "cookies.txt"
 
+    # Optional: HTTP proxy for yt-dlp (e.g. http://user:pass@host:port). Helps with datacenter IP blocks.
+    yt_proxy: str | None = None
+
     # Logging
     log_level: str = "INFO"
 

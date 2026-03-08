@@ -55,6 +55,7 @@ def run_worker(
     video_storage_path: str,
     gemini_model: str = "gemini-2.5-flash",
     yt_cookies_path: str = "cookies.txt",
+    yt_proxy: str | None = None,
     stop_event: threading.Event | None = None,
     admin_telegram_chat_id: str | None = None,
     telegram_bot_token: str | None = None,
@@ -71,6 +72,7 @@ def run_worker(
     downloader = YtDlpDownloader(
         storage_path=video_storage_path,
         cookies_path=str(cookies_path),
+        proxy=yt_proxy,
     )
 
     if stop_event is None:

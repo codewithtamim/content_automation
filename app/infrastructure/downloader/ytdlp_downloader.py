@@ -70,10 +70,12 @@ class YtDlpDownloader:
         self,
         storage_path: str = "/tmp/videos",
         cookies_path: Optional[str] = None,
+        proxy: Optional[str] = None,
     ):
         self.storage_path = Path(storage_path)
         self.storage_path.mkdir(parents=True, exist_ok=True)
         self.cookies_path = Path(cookies_path) if (cookies_path and cookies_path.strip()) else None
+        self.proxy = proxy.strip() if (proxy and proxy.strip()) else None
 
     def download(
         self,
@@ -102,11 +104,17 @@ class YtDlpDownloader:
             "quiet": True,
             "no_warnings": True,
             "extract_flat": False,
-            # Try web first when we have cookies; skip webpage only when no user cookies (avoids consent_required)
+            **({"proxy": self.proxy} if self.proxy else {}),
+            # Avoid web client - triggers "Sign in to confirm" on datacenter/VPS IPs.
+            # Use tv/android clients (no PO token required). tv_embedded first when we have cookies.
             "extractor_args": {
                 "youtube": {
-                    "player_client": ["web", "tv_embedded", "tv", "tv_simply", "android_vr", "android"],
-                    "player_skip": ["configs"] if has_user_cookies else ["webpage", "configs"],
+                    "player_client": (
+                        ["tv_embedded", "tv", "tv_simply", "android_vr", "android"]
+                        if has_user_cookies
+                        else ["tv", "tv_simply", "android_vr", "android"]
+                    ),
+                    "player_skip": ["webpage", "configs"],
                 },
             },
         }
