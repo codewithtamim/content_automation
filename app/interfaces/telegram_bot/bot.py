@@ -1479,7 +1479,7 @@ async def clear_all_jobs_confirm_callback(update: Update, context: ContextTypes.
     try:
         if pause_event:
             pause_event.set()
-            await asyncio.sleep(2.5)
+            await asyncio.sleep(4)
         SessionLocal = context.bot_data["SessionLocal"]
         count = await asyncio.wait_for(
             asyncio.to_thread(_delete_all_jobs_sync, SessionLocal),
