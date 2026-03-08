@@ -79,8 +79,10 @@ def process_job(
         with get_db_session(session_factory) as session:
             repo = VideoJobRepository(session)
             job = repo.get_by_id(job_id)
-    else:
+    elif repository:
         job = repository.get_by_id(job_id)
+    else:
+        raise ValueError("Either SessionLocal or repository must be provided")
 
     if not job:
         raise ValueError(f"Job {job_id} not found")
