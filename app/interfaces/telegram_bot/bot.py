@@ -81,8 +81,9 @@ SCHEDULE_URLS, SCHEDULE_TIME = 1, 2
 UPLOAD_PICK_ACCOUNT, SCHEDULE_PICK_ACCOUNT = 3, 4
 ADD_ADMIN_USERNAME, ADD_ADMIN_PERMISSIONS, REMOVE_ADMIN_USERNAME = 10, 12, 11
 ADD_GEMINI_KEY = 20
-ADD_INSTA_USERNAME, ADD_INSTA_PASSWORD = 21, 22
+ADD_INSTA_USERNAME, ADD_INSTA_PASSWORD, ADD_INSTA_WATERMARK = 21, 22, 24
 ADD_COOKIES = 23
+UPDATE_INSTA_WATERMARK = 25
 
 # Callback data
 CB_UPLOAD = "upload"
@@ -101,6 +102,8 @@ CB_LIST_INSTA = "list_insta"
 CB_ACCOUNT_PREFIX = "acc_"
 CB_REMOVE_GEMINI_PREFIX = "rm_gem_"
 CB_REMOVE_INSTA_PREFIX = "rm_inst_"
+CB_UPDATE_WM_PREFIX = "upd_wm_"
+CB_REMOVE_WM_PREFIX = "rm_wm_"
 CB_BACK = "back"
 CB_PERM_FULL = "perm_full"
 CB_PERM_UPLOAD = "perm_upload"
@@ -330,11 +333,11 @@ def _build_time_picker_keyboard(
     return InlineKeyboardMarkup(keyboard)
 
 
-def _build_account_picker_keyboard(accounts: list[tuple[int, str]]) -> InlineKeyboardMarkup:
+def _build_account_picker_keyboard(accounts: list[tuple[int, str, str | None]]) -> InlineKeyboardMarkup:
     """Build inline keyboard for picking Instagram account."""
     keyboard = [
         [InlineKeyboardButton(f"@{username}", callback_data=f"{CB_ACCOUNT_PREFIX}{acc_id}")]
-        for acc_id, username in accounts
+        for acc_id, username, _wm in accounts
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -423,6 +426,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 repo = InstagramAccountRepository(session)
                 menu = build_main_menu_keyboard(main_admin, sub_perms)
                 if repo.remove(acc_id):
+                    # Also delete the watermark file if it exists
+                    import os
+                    wm_file = _watermark_dir() / f"{acc_id}.png"
+                    if wm_file.exists():
+                        os.remove(str(wm_file))
                     await query.edit_message_text(f"Removed Instagram account {acc_id}. ✓", reply_markup=menu)
                 else:
                     await query.edit_message_text("That account wasn't found.", reply_markup=menu)
@@ -431,6 +439,35 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 "Invalid account ID.",
                 reply_markup=build_main_menu_keyboard(main_admin, sub_perms),
             )
+        return ConversationHandler.END
+    elif data and data.startswith(CB_REMOVE_WM_PREFIX):
+        if not _user_has_permission(user_perms, PERM_MANAGE_CREDS):
+            return ConversationHandler.END
+        try:
+            acc_id = int(data[len(CB_REMOVE_WM_PREFIX):])
+            SessionLocal = context.bot_data["SessionLocal"]
+            with get_db_session(SessionLocal) as session:
+                repo = InstagramAccountRepository(session)
+                repo.update_watermark(acc_id, None)
+            import os
+            wm_file = _watermark_dir() / f"{acc_id}.png"
+            if wm_file.exists():
+                os.remove(str(wm_file))
+            menu = build_main_menu_keyboard(main_admin, sub_perms)
+            await query.edit_message_text("Watermark removed. ✓", reply_markup=menu)
+        except ValueError:
+            await query.edit_message_text("Invalid account ID.", reply_markup=build_main_menu_keyboard(main_admin, sub_perms))
+        return ConversationHandler.END
+    elif data and data.startswith(CB_UPDATE_WM_PREFIX):
+        if not _user_has_permission(user_perms, PERM_MANAGE_CREDS):
+            return ConversationHandler.END
+        try:
+            acc_id = int(data[len(CB_UPDATE_WM_PREFIX):])
+            context.user_data["wm_update_account_id"] = acc_id
+            await query.edit_message_text("Send the new watermark logo image for this account:")
+            return UPDATE_INSTA_WATERMARK
+        except ValueError:
+            await query.edit_message_text("Invalid account ID.", reply_markup=build_main_menu_keyboard(main_admin, sub_perms))
         return ConversationHandler.END
 
     if data == CB_MANAGE_ADMINS:
@@ -557,7 +594,7 @@ async def _show_gemini_keys(query, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def _show_instagram_accounts(query, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show list of Instagram accounts with remove buttons."""
+    """Show list of Instagram accounts with watermark status and management buttons."""
     SessionLocal = context.bot_data["SessionLocal"]
     with get_db_session(SessionLocal) as session:
         repo = InstagramAccountRepository(session)
@@ -568,12 +605,22 @@ async def _show_instagram_accounts(query, context: ContextTypes.DEFAULT_TYPE) ->
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("← Back", callback_data=CB_BACK)]]),
         )
         return
-    keyboard = [
-        [InlineKeyboardButton(f"@{username} - Remove", callback_data=f"{CB_REMOVE_INSTA_PREFIX}{acc_id}")]
-        for acc_id, username in accounts
-    ]
+
+    lines = []
+    keyboard = []
+    for acc_id, username, wm_path in accounts:
+        wm_status = "watermark" if wm_path else "no watermark"
+        lines.append(f"• @{username} ({wm_status})")
+        row = [InlineKeyboardButton(f"@{username} - Remove", callback_data=f"{CB_REMOVE_INSTA_PREFIX}{acc_id}")]
+        if wm_path:
+            row.append(InlineKeyboardButton("Update WM", callback_data=f"{CB_UPDATE_WM_PREFIX}{acc_id}"))
+            row.append(InlineKeyboardButton("Remove WM", callback_data=f"{CB_REMOVE_WM_PREFIX}{acc_id}"))
+        else:
+            row.append(InlineKeyboardButton("Add WM", callback_data=f"{CB_UPDATE_WM_PREFIX}{acc_id}"))
+        keyboard.append(row)
+
     keyboard.append([InlineKeyboardButton("← Back", callback_data=CB_BACK)])
-    text = "Instagram accounts:\n\n" + "\n".join(f"• @{username} (ID: {acc_id})" for acc_id, username in accounts)
+    text = "Instagram accounts:\n\n" + "\n".join(lines)
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 
@@ -689,7 +736,7 @@ async def add_insta_username_received(update: Update, context: ContextTypes.DEFA
 
 
 async def add_insta_password_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle Instagram password - store in DB."""
+    """Handle Instagram password - store in DB, then ask for watermark."""
     admin_chat_id = context.bot_data["admin_chat_id"]
     admin_username = context.bot_data["admin_username"]
     if not is_main_admin(update, admin_chat_id, admin_username):
@@ -703,12 +750,117 @@ async def add_insta_password_received(update: Update, context: ContextTypes.DEFA
     try:
         with get_db_session(SessionLocal) as session:
             repo = InstagramAccountRepository(session)
-            repo.add(username, password)
-        menu = await _get_main_menu_for_completion(update, context)
-        await update.message.reply_text(f"Added @{username} – Instagram account ready! ✓", reply_markup=menu)
+            model = repo.add(username, password)
+            context.user_data["insta_account_id"] = model.id
+        await update.message.reply_text(
+            f"@{username} saved! Now send a watermark logo image for this account, "
+            "or /skip to skip watermark."
+        )
+        return ADD_INSTA_WATERMARK
     except Exception:
         await update.message.reply_text("Couldn't add – username may already exist.")
     context.user_data.pop("insta_username", None)
+    return ConversationHandler.END
+
+
+def _watermark_dir() -> "Path":
+    """Return the watermarks directory, creating it if needed."""
+    from pathlib import Path
+    wm_dir = Path(__file__).resolve().parents[3] / "data" / "watermarks"
+    wm_dir.mkdir(parents=True, exist_ok=True)
+    return wm_dir
+
+
+async def _save_watermark_from_message(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, account_id: int,
+) -> str | None:
+    """Download a photo or document from the message and save as watermark. Returns path or None."""
+    msg = update.message
+    if not msg:
+        return None
+
+    if msg.photo:
+        file = await context.bot.get_file(msg.photo[-1].file_id)
+    elif msg.document:
+        file = await context.bot.get_file(msg.document.file_id)
+    else:
+        return None
+
+    dest = _watermark_dir() / f"{account_id}.png"
+    await file.download_to_drive(custom_path=str(dest))
+    return str(dest)
+
+
+async def add_insta_watermark_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle watermark image upload for a newly added Instagram account."""
+    admin_chat_id = context.bot_data["admin_chat_id"]
+    admin_username = context.bot_data["admin_username"]
+    if not is_main_admin(update, admin_chat_id, admin_username):
+        return ConversationHandler.END
+
+    account_id = context.user_data.get("insta_account_id")
+    insta_username = context.user_data.get("insta_username", "")
+
+    if not account_id:
+        await update.message.reply_text("Session expired. Start over from Manage credentials.")
+        return ConversationHandler.END
+
+    text = (update.message.text or "").strip().lower()
+    if text in ("/skip", "skip"):
+        menu = await _get_main_menu_for_completion(update, context)
+        await update.message.reply_text(
+            f"Done! @{insta_username} added without watermark.",
+            reply_markup=menu,
+        )
+        context.user_data.pop("insta_username", None)
+        context.user_data.pop("insta_account_id", None)
+        return ConversationHandler.END
+
+    path = await _save_watermark_from_message(update, context, account_id)
+    if not path:
+        await update.message.reply_text("Please send an image (photo or file), or /skip to skip.")
+        return ADD_INSTA_WATERMARK
+
+    SessionLocal = context.bot_data["SessionLocal"]
+    with get_db_session(SessionLocal) as session:
+        repo = InstagramAccountRepository(session)
+        repo.update_watermark(account_id, path)
+
+    menu = await _get_main_menu_for_completion(update, context)
+    await update.message.reply_text(
+        f"Done! @{insta_username} added with watermark logo.",
+        reply_markup=menu,
+    )
+    context.user_data.pop("insta_username", None)
+    context.user_data.pop("insta_account_id", None)
+    return ConversationHandler.END
+
+
+async def update_insta_watermark_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle watermark image upload for an existing Instagram account."""
+    admin_chat_id = context.bot_data["admin_chat_id"]
+    admin_username = context.bot_data["admin_username"]
+    if not is_main_admin(update, admin_chat_id, admin_username):
+        return ConversationHandler.END
+
+    account_id = context.user_data.get("wm_update_account_id")
+    if not account_id:
+        await update.message.reply_text("Session expired. Start over from Manage credentials.")
+        return ConversationHandler.END
+
+    path = await _save_watermark_from_message(update, context, account_id)
+    if not path:
+        await update.message.reply_text("Please send an image (photo or file).")
+        return UPDATE_INSTA_WATERMARK
+
+    SessionLocal = context.bot_data["SessionLocal"]
+    with get_db_session(SessionLocal) as session:
+        repo = InstagramAccountRepository(session)
+        repo.update_watermark(account_id, path)
+
+    menu = await _get_main_menu_for_completion(update, context)
+    await update.message.reply_text("Watermark updated! ✓", reply_markup=menu)
+    context.user_data.pop("wm_update_account_id", None)
     return ConversationHandler.END
 
 
@@ -1256,6 +1408,14 @@ def create_application(
             ],
             ADD_INSTA_PASSWORD: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, add_insta_password_received),
+            ],
+            ADD_INSTA_WATERMARK: [
+                MessageHandler(filters.PHOTO | filters.Document.ALL, add_insta_watermark_received),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_insta_watermark_received),
+            ],
+            UPDATE_INSTA_WATERMARK: [
+                MessageHandler(filters.PHOTO | filters.Document.ALL, update_insta_watermark_received),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, update_insta_watermark_received),
             ],
             ADD_COOKIES: [
                 MessageHandler(filters.Document.ALL, add_cookies_received),

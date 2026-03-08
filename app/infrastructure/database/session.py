@@ -43,6 +43,10 @@ def init_db(engine) -> None:
             conn.execute(text("ALTER TABLE video_jobs ADD COLUMN submitted_by_username VARCHAR(255)"))
             conn.commit()
 
+        if not _table_has_column(conn, "instagram_accounts", "watermark_path"):
+            conn.execute(text("ALTER TABLE instagram_accounts ADD COLUMN watermark_path VARCHAR(1024)"))
+            conn.commit()
+
         if not _table_has_column(conn, "sub_admins", "permissions"):
             conn.execute(text("ALTER TABLE sub_admins ADD COLUMN permissions TEXT"))
             all_perms = json.dumps([

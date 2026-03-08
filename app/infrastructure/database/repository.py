@@ -248,34 +248,50 @@ class InstagramAccountRepository:
     def __init__(self, session: Session):
         self.session = session
 
-    def add(self, username: str, password_encrypted: str) -> InstagramAccountModel:
+    def add(
+        self, username: str, password_encrypted: str, watermark_path: str | None = None,
+    ) -> InstagramAccountModel:
         """Add an Instagram account (password encrypted)."""
-        model = InstagramAccountModel(username=username, password_encrypted=password_encrypted)
+        model = InstagramAccountModel(
+            username=username,
+            password_encrypted=password_encrypted,
+            watermark_path=watermark_path,
+        )
         self.session.add(model)
         self.session.flush()
         return model
 
-    def list_all(self) -> list[tuple[int, str]]:
-        """Return (id, username) tuples."""
-        stmt = select(InstagramAccountModel.id, InstagramAccountModel.username).order_by(
-            InstagramAccountModel.username
-        )
+    def list_all(self) -> list[tuple[int, str, str | None]]:
+        """Return (id, username, watermark_path) tuples."""
+        stmt = select(
+            InstagramAccountModel.id,
+            InstagramAccountModel.username,
+            InstagramAccountModel.watermark_path,
+        ).order_by(InstagramAccountModel.username)
         result = self.session.execute(stmt)
-        return [(row[0], row[1]) for row in result.fetchall()]
+        return [(row[0], row[1], row[2]) for row in result.fetchall()]
 
-    def get_by_id(self, account_id: int) -> Optional[tuple[str, str]]:
-        """Get (username, password_encrypted) by id. Returns None if not found."""
+    def get_by_id(self, account_id: int) -> Optional[tuple[str, str, str | None]]:
+        """Get (username, password_encrypted, watermark_path) by id."""
         model = self.session.get(InstagramAccountModel, account_id)
         if not model:
             return None
-        return (model.username, model.password_encrypted)
+        return (model.username, model.password_encrypted, model.watermark_path)
+
+    def update_watermark(self, account_id: int, watermark_path: str | None) -> bool:
+        """Set or clear the watermark path for an account. Returns True if found."""
+        model = self.session.get(InstagramAccountModel, account_id)
+        if not model:
+            return False
+        model.watermark_path = watermark_path
+        self.session.flush()
+        return True
 
     def remove(self, account_id: int) -> bool:
         """Remove an Instagram account by id. Returns True if removed."""
         model = self.session.get(InstagramAccountModel, account_id)
         if not model:
             return False
-        # Nullify references in video_jobs so the FK constraint allows deletion
         stmt = (
             update(VideoJobModel)
             .where(VideoJobModel.instagram_account_id == account_id)
