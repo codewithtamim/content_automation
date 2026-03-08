@@ -4,17 +4,22 @@ set -e
 echo "=== TiktokAutomation - Termux Setup ==="
 
 # ── Install system packages ──────────────────────────────────────────
+# Native libs from Termux repos (prebuilt, fast install).
+# - rust: needed to compile pydantic-core, cryptography, etc.
+# - python-numpy/pillow/cryptography: avoid slow source builds
 pkg update -y && pkg install -y \
     python \
     ffmpeg \
     git \
     binutils \
+    rust \
     python-numpy \
     python-pillow \
     python-cryptography \
     python-pip
 
 # ── Virtual environment ──────────────────────────────────────────────
+# --system-site-packages lets pip reuse numpy/pillow/cryptography from pkg
 if [ ! -d "venv" ]; then
     echo "Creating Python virtual environment..."
     python -m venv --system-site-packages venv
@@ -24,30 +29,24 @@ source venv/bin/activate
 # ── Python dependencies ──────────────────────────────────────────────
 pip install --upgrade pip
 
-# Install deps in two passes to avoid getting stuck compiling numpy etc.
-#
-# Pass 1: Install everything EXCEPT instagrapi (which drags in moviepy →
-#          numpy/pillow source builds that hang on Termux).
+# Step 1: Core deps (pure-python wheels, installs fast)
 pip install \
     "python-telegram-bot>=22.6" \
     "yt-dlp[default]>=2026.3.3" \
-    "google-genai>=1.66.0" \
     "sqlalchemy>=2.0.48" \
     "ffmpeg-python>=0.2.0" \
     "pydantic-settings>=2.13.1"
 
-# Pass 2: Install instagrapi's own deps that need C compilation, one by
-#          one so we can control flags.
-pip install pycryptodomex
+# Step 2: Packages that need C/Rust compilation (Rust installed above)
+pip install pycryptodomex pydantic
 
-# Pass 3: Install instagrapi but tell pip the heavy native packages are
-#          already satisfied — don't download or rebuild them.
+# Step 3: google-genai (depends on pydantic which is now installed)
+pip install "google-genai>=1.66.0"
+
+# Step 4: instagrapi without moviepy (moviepy pulls numpy source build;
+# instagrapi only uses moviepy for video thumbnails which we don't need)
 pip install instagrapi --no-deps
-
-# Install the remaining pure-python deps that instagrapi actually needs
-# at runtime (skip moviepy — instagrapi only uses it for video thumbnails
-# which we don't need; our videos already have thumbnails).
-pip install PySocks pydantic requests
+pip install PySocks requests
 
 # ── Environment file ─────────────────────────────────────────────────
 if [ ! -f ".env" ]; then
