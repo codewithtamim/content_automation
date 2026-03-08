@@ -1,5 +1,6 @@
 """Telegram bot interface with admin-only access control."""
 
+import asyncio
 import logging
 import re
 from datetime import datetime, timezone
@@ -1455,6 +1456,13 @@ async def start_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     return ConversationHandler.END
 
 
+def _delete_all_jobs_sync(SessionLocal) -> int:
+    """Sync delete - run in thread to avoid blocking event loop."""
+    with get_db_session(SessionLocal) as session:
+        repo = VideoJobRepository(session)
+        return repo.delete_all()
+
+
 async def clear_all_jobs_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle Yes, clear all button."""
     query = update.callback_query
@@ -1466,16 +1474,29 @@ async def clear_all_jobs_confirm_callback(update: Update, context: ContextTypes.
     if not is_admin(update, admin_chat_id, admin_username, sub_admin_usernames):
         await query.answer()
         return
+    await query.answer("Clearing...")
     try:
         SessionLocal = context.bot_data["SessionLocal"]
-        with get_db_session(SessionLocal) as session:
-            repo = VideoJobRepository(session)
-            count = repo.delete_all()
-        await query.answer(f"Cleared {count} jobs")
-        await _show_scheduled_tasks(query, context)
+        count = await asyncio.wait_for(
+            asyncio.to_thread(_delete_all_jobs_sync, SessionLocal),
+            timeout=30.0,
+        )
+        await query.edit_message_text(
+            f"Cleared {count} jobs. ✓",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("← Back", callback_data=CB_VIEW)]]),
+        )
+    except asyncio.TimeoutError:
+        logger.warning("Clear all jobs timed out (DB locked?)")
+        await query.edit_message_text(
+            "Database busy. Try again in a moment, or stop the app and run: python clear_jobs.py",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("← Back", callback_data=CB_VIEW)]]),
+        )
     except Exception as e:
         logger.exception("Clear all jobs failed: %s", e)
-        await query.answer("Failed to clear jobs", show_alert=True)
+        await query.edit_message_text(
+            f"Failed: {e}",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("← Back", callback_data=CB_VIEW)]]),
+        )
 
 
 async def clear_all_jobs_show_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
