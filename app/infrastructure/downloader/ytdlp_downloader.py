@@ -20,49 +20,28 @@ _CONSENT_COOKIES = [
 ]
 
 
-def _ensure_consent_cookies(cookies_path: Optional[Path]) -> Optional[Path]:
+def _ensure_consent_cookies(cookies_path: Optional[Path]) -> tuple[Optional[Path], bool]:
     """
-    Return a cookies file path with EU consent cookies (CONSENT, SOCS) added.
-    Merges with existing cookies or creates a minimal file. Uses a temp file to avoid mutating the original.
+    Return (cookies_file_path, is_temp).
+    When user has cookies: use them as-is. When no cookies: create temp file with EU consent only.
     """
-    expiration = "9999999999"  # Far future
+    if cookies_path and cookies_path.exists() and cookies_path.stat().st_size > 0:
+        return (cookies_path, False)
+
+    expiration = "9999999999"
     consent_lines = [
         f"{domain}\tTRUE\t{path}\tTRUE\t{expiration}\t{name}\t{value}"
         for domain, path, name, value in _CONSENT_COOKIES
     ]
-
-    if cookies_path and cookies_path.exists() and cookies_path.stat().st_size > 0:
-        try:
-            text = cookies_path.read_text(encoding="utf-8", errors="replace")
-            lines = text.splitlines()
-            out_lines = []
-            for line in lines:
-                if line.startswith("#") or not line.strip():
-                    out_lines.append(line)
-                    continue
-                parts = line.split("\t")
-                if len(parts) >= 7:
-                    name, domain = parts[5], parts[0]
-                    if name in ("CONSENT", "SOCS") and "youtube" in domain:
-                        continue  # Drop existing consent cookies, we'll add fresh ones
-                out_lines.append(line)
-            merged = "\n".join(out_lines).rstrip()
-            if not merged.endswith("\n") and merged:
-                merged += "\n"
-            merged += "\n".join(consent_lines) + "\n"
-        except OSError as e:
-            logger.warning("Could not read cookies file %s: %s. Using consent-only.", cookies_path, e)
-            merged = "# HTTP Cookie File\n" + "\n".join(consent_lines) + "\n"
-    else:
-        merged = "# HTTP Cookie File\n" + "\n".join(consent_lines) + "\n"
+    merged = "# HTTP Cookie File\n" + "\n".join(consent_lines) + "\n"
 
     fd, path = tempfile.mkstemp(suffix=".txt", prefix="ytdlp_cookies_")
     try:
         with open(fd, "w", encoding="utf-8") as f:
             f.write(merged)
-        return Path(path)
+        return (Path(path), True)
     except OSError:
-        return cookies_path
+        return (None, False)
 
 
 def _convert_to_mp4(path: str) -> str:
@@ -112,6 +91,8 @@ class YtDlpDownloader:
             Tuple of (local_path, original_title, original_tags).
         """
         output_template = str(self.storage_path / f"{job_id}.%(ext)s")
+        cookies_to_use, is_temp = _ensure_consent_cookies(self.cookies_path)
+        has_user_cookies = cookies_to_use is not None and not is_temp
 
         ydl_opts = {
             "format": "bestvideo+bestaudio/best",
@@ -121,20 +102,18 @@ class YtDlpDownloader:
             "quiet": True,
             "no_warnings": True,
             "extract_flat": False,
-            # Prefer clients that don't require PO Token (avoids challenge_required)
-            # Skip webpage to avoid consent_required (EU cookie consent / age verification)
+            # Try web first when we have cookies; skip webpage only when no user cookies (avoids consent_required)
             "extractor_args": {
                 "youtube": {
-                    "player_client": ["tv_embedded", "tv", "tv_simply", "android_vr", "android"],
-                    "player_skip": ["webpage", "configs"],
+                    "player_client": ["web", "tv_embedded", "tv", "tv_simply", "android_vr", "android"],
+                    "player_skip": ["configs"] if has_user_cookies else ["webpage", "configs"],
                 },
             },
         }
-        cookies_to_use = _ensure_consent_cookies(self.cookies_path)
         try:
             if cookies_to_use:
                 ydl_opts["cookiefile"] = str(cookies_to_use)
-                logger.info("Using cookies from %s (with EU consent)", cookies_to_use)
+                logger.info("Using cookies from %s", cookies_to_use)
             elif self.cookies_path:
                 logger.warning(
                     "Cookies file missing or empty at %s. YouTube may block downloads. "
@@ -151,7 +130,7 @@ class YtDlpDownloader:
                     extracted_info["tags"] = info.get("tags") or []
 
         finally:
-            if cookies_to_use:
+            if is_temp and cookies_to_use:
                 try:
                     cookies_to_use.unlink(missing_ok=True)
                 except OSError:
