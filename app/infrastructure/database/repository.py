@@ -137,6 +137,11 @@ class VideoJobRepository:
         models = result.scalars().all()
         return [_model_to_entity(m) for m in models]
 
+    def delete_all(self) -> int:
+        """Delete all jobs. Returns number of rows deleted."""
+        result = self.session.execute(delete(VideoJobModel))
+        return result.rowcount or 0
+
 
 # Sub-admin permission constants
 PERM_UPLOAD_VIDEOS = "upload_videos"
