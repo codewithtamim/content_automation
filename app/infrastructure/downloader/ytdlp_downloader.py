@@ -82,6 +82,7 @@ class YtDlpDownloader:
             "outtmpl": output_template,
             "noplaylist": True,
             "logger": logger,
+            "js_runtimes": ["node"],
         }
 
         if (
