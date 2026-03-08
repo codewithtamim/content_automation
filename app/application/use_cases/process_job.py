@@ -1,14 +1,17 @@
 """Process job use case - orchestrates download, AI metadata, and upload."""
 
+import logging
 import os
 from collections.abc import Callable
-from datetime import datetime, timezone
 from typing import Optional
 
 from app.domain.entities.video_job import VideoJob
 from app.infrastructure.database.repository import VideoJobRepository
 from app.infrastructure.downloader.ytdlp_downloader import YtDlpDownloader
 from app.infrastructure.uploaders.instagram_uploader import InstagramUploader
+from app.infrastructure.video.watermark import add_watermark
+
+logger = logging.getLogger(__name__)
 
 
 def _build_caption(title: str, tags: list[str]) -> str:
@@ -25,9 +28,10 @@ def process_job(
     instagram_uploader: InstagramUploader = None,
     generate_metadata_fn: Optional[Callable[[str, list[str]], dict]] = None,
     delete_after_upload: bool = True,
+    logo_path: Optional[str] = None,
 ) -> VideoJob:
     """
-    Process a single video job: download, generate metadata, upload.
+    Process a single video job: download, watermark, generate metadata, upload.
 
     Args:
         job_id: Job ID to process.
@@ -37,6 +41,7 @@ def process_job(
         instagram_uploader: Instagram uploader.
         generate_metadata_fn: Callable(title, tags) -> dict with title, tags. Used if provided.
         delete_after_upload: Whether to delete local file after upload.
+        logo_path: Path to logo PNG for watermarking. Skipped if None.
 
     Returns:
         Updated VideoJob entity.
@@ -58,7 +63,16 @@ def process_job(
         job.original_tags = original_tags or []
         repository.update(job)
 
-        # 2. Generate metadata
+        # 2. Watermark
+        if logo_path and os.path.exists(logo_path):
+            job.status = "watermarking"
+            repository.update(job)
+            add_watermark(local_path, logo_path)
+            logger.info("Watermark applied to job %s", job_id)
+        else:
+            logger.warning("Logo not found at %s, skipping watermark", logo_path)
+
+        # 3. Generate metadata
         job.status = "metadata_generating"
         repository.update(job)
 
@@ -75,7 +89,7 @@ def process_job(
         job.generated_tags = metadata["tags"]
         repository.update(job)
 
-        # 3. Upload
+        # 4. Upload
         job.status = "uploading"
         repository.update(job)
 
@@ -83,7 +97,7 @@ def process_job(
 
         instagram_uploader.upload_reel(local_path, caption)
 
-        # 4. Success
+        # 5. Success
         job.status = "completed"
         job.error_message = None
         repository.update(job)

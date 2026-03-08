@@ -4,6 +4,7 @@ import logging
 import threading
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 from app.application.use_cases.process_job import process_job
 from app.infrastructure.ai.gemini_client import generate_metadata_with_failover
@@ -68,6 +69,10 @@ def run_worker(
     """
     cookies_path = get_cookies_path(yt_cookies_path)
     logger.info("Worker cookies path: %s", cookies_path)
+
+    project_root = Path(__file__).resolve().parents[3]
+    logo_path = str(project_root / "app" / "images" / "logo.png")
+    logger.info("Watermark logo path: %s", logo_path)
 
     downloader = YtDlpDownloader(
         storage_path=video_storage_path,
@@ -155,6 +160,7 @@ def run_worker(
                             metadata_client=None,
                             instagram_uploader=instagram_uploader,
                             generate_metadata_fn=_generate_metadata,
+                            logo_path=logo_path,
                         )
                         logger.info("Job %s completed successfully", job.id)
                         time.sleep(UPLOAD_DELAY_SECONDS)

@@ -13,6 +13,9 @@ google-genai>=1.66.0
 # Database (SQLite via Python stdlib, no extra driver needed)
 sqlalchemy>=2.0.48
 
+# Video Processing
+ffmpeg-python>=0.2.0
+
 # Config
 pydantic-settings>=2.13.1
 
