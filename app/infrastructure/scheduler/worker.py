@@ -56,7 +56,7 @@ def run_worker(
     gemini_model: str = "gemini-2.5-flash",
     yt_cookies_path: str = "cookies.txt",
     stop_event: threading.Event | None = None,
-    admin_telegram_chat_id: str | None = None,git
+    admin_telegram_chat_id: str | None = None,
     telegram_bot_token: str | None = None,
 ) -> None:
     """
