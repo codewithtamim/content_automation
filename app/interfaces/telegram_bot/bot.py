@@ -34,7 +34,7 @@ from app.infrastructure.database.repository import (
     SubAdminRepository,
     VideoJobRepository,
 )
-from app.infrastructure.database.session import get_db_session
+from app.infrastructure.database.session import get_db_session, run_db_async
 from app.infrastructure.instagram.remove_dead_videos import remove_dead_videos
 
 logger = logging.getLogger(__name__)
@@ -372,14 +372,18 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         try:
             job_id = int(data[len(CB_CANCEL_JOB_PREFIX):])
             SessionLocal = context.bot_data["SessionLocal"]
-            cancelled = False
-            with get_db_session(SessionLocal) as session:
-                repo = VideoJobRepository(session)
-                job = repo.get_by_id(job_id)
-                if job and job.status == "pending":
-                    job.status = "cancelled"
-                    repo.update(job)
-                    cancelled = True
+
+            def _cancel_job():
+                with get_db_session(SessionLocal) as session:
+                    repo = VideoJobRepository(session)
+                    job = repo.get_by_id(job_id)
+                    if job and job.status == "pending":
+                        job.status = "cancelled"
+                        repo.update(job)
+                        return True
+                return False
+
+            cancelled = await run_db_async(_cancel_job)
             if cancelled:
                 await query.answer("Job cancelled")
                 await _show_scheduled_tasks(query, context)
@@ -439,9 +443,13 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         if not _user_has_permission(user_perms, PERM_MANAGE_CREDS):
             return ConversationHandler.END
         SessionLocal = context.bot_data["SessionLocal"]
-        with get_db_session(SessionLocal) as session:
-            repo = InstagramAccountRepository(session)
-            accounts = repo.list_all()
+
+        def _get_insta_accounts():
+            with get_db_session(SessionLocal) as session:
+                repo = InstagramAccountRepository(session)
+                return repo.list_all()
+
+        accounts = await run_db_async(_get_insta_accounts)
         if not accounts:
             await query.edit_message_text(
                 "No Instagram accounts yet. Add one first.",
@@ -464,13 +472,18 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         try:
             key_id = int(data[len(CB_REMOVE_GEMINI_PREFIX) :])
             SessionLocal = context.bot_data["SessionLocal"]
-            with get_db_session(SessionLocal) as session:
-                repo = GeminiKeyRepository(session)
-                menu = build_main_menu_keyboard(main_admin, sub_perms)
-                if repo.remove(key_id):
-                    await query.edit_message_text(f"Removed Gemini key {key_id}. ✓", reply_markup=menu)
-                else:
-                    await query.edit_message_text("That key wasn't found.", reply_markup=menu)
+
+            def _remove_gemini_key():
+                with get_db_session(SessionLocal) as session:
+                    repo = GeminiKeyRepository(session)
+                    return repo.remove(key_id)
+
+            removed = await run_db_async(_remove_gemini_key)
+            menu = build_main_menu_keyboard(main_admin, sub_perms)
+            if removed:
+                await query.edit_message_text(f"Removed Gemini key {key_id}. ✓", reply_markup=menu)
+            else:
+                await query.edit_message_text("That key wasn't found.", reply_markup=menu)
         except ValueError:
             await query.edit_message_text("Invalid key ID.", reply_markup=build_main_menu_keyboard(main_admin, sub_perms))
         return ConversationHandler.END
@@ -480,18 +493,22 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         try:
             acc_id = int(data[len(CB_REMOVE_INSTA_PREFIX) :])
             SessionLocal = context.bot_data["SessionLocal"]
-            with get_db_session(SessionLocal) as session:
-                repo = InstagramAccountRepository(session)
-                menu = build_main_menu_keyboard(main_admin, sub_perms)
-                if repo.remove(acc_id):
-                    # Also delete the watermark file if it exists
-                    import os
-                    wm_file = _watermark_dir() / f"{acc_id}.png"
-                    if wm_file.exists():
-                        os.remove(str(wm_file))
-                    await query.edit_message_text(f"Removed Instagram account {acc_id}. ✓", reply_markup=menu)
-                else:
-                    await query.edit_message_text("That account wasn't found.", reply_markup=menu)
+
+            def _remove_insta_account():
+                with get_db_session(SessionLocal) as session:
+                    repo = InstagramAccountRepository(session)
+                    return repo.remove(acc_id)
+
+            removed = await run_db_async(_remove_insta_account)
+            menu = build_main_menu_keyboard(main_admin, sub_perms)
+            if removed:
+                import os
+                wm_file = _watermark_dir() / f"{acc_id}.png"
+                if wm_file.exists():
+                    os.remove(str(wm_file))
+                await query.edit_message_text(f"Removed Instagram account {acc_id}. ✓", reply_markup=menu)
+            else:
+                await query.edit_message_text("That account wasn't found.", reply_markup=menu)
         except ValueError:
             await query.edit_message_text(
                 "Invalid account ID.",
@@ -504,9 +521,13 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         try:
             acc_id = int(data[len(CB_REMOVE_WM_PREFIX):])
             SessionLocal = context.bot_data["SessionLocal"]
-            with get_db_session(SessionLocal) as session:
-                repo = InstagramAccountRepository(session)
-                repo.update_watermark(acc_id, None)
+
+            def _remove_watermark():
+                with get_db_session(SessionLocal) as session:
+                    repo = InstagramAccountRepository(session)
+                    repo.update_watermark(acc_id, None)
+
+            await run_db_async(_remove_watermark)
             import os
             wm_file = _watermark_dir() / f"{acc_id}.png"
             if wm_file.exists():
@@ -613,9 +634,13 @@ def _build_permission_picker_keyboard(selected: set[str]) -> InlineKeyboardMarku
 async def _show_sub_admins(query, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Show list of sub-admins with their permissions."""
     SessionLocal = context.bot_data["SessionLocal"]
-    with get_db_session(SessionLocal) as session:
-        repo = SubAdminRepository(session)
-        admins = repo.list_all()
+
+    def _get_sub_admins():
+        with get_db_session(SessionLocal) as session:
+            repo = SubAdminRepository(session)
+            return repo.list_all()
+
+    admins = await run_db_async(_get_sub_admins)
     if not admins:
         await query.edit_message_text(
             "No sub-admins yet. Add one below!",
@@ -633,9 +658,13 @@ async def _show_sub_admins(query, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def _show_gemini_keys(query, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Show list of Gemini keys with remove buttons."""
     SessionLocal = context.bot_data["SessionLocal"]
-    with get_db_session(SessionLocal) as session:
-        repo = GeminiKeyRepository(session)
-        keys = repo.list_all_ordered()
+
+    def _get_gemini_keys():
+        with get_db_session(SessionLocal) as session:
+            repo = GeminiKeyRepository(session)
+            return repo.list_all_ordered()
+
+    keys = await run_db_async(_get_gemini_keys)
     if not keys:
         await query.edit_message_text(
             "No Gemini keys yet. Add one to get started!",
@@ -654,9 +683,13 @@ async def _show_gemini_keys(query, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def _show_instagram_accounts(query, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Show list of Instagram accounts with watermark status and management buttons."""
     SessionLocal = context.bot_data["SessionLocal"]
-    with get_db_session(SessionLocal) as session:
-        repo = InstagramAccountRepository(session)
-        accounts = repo.list_all()
+
+    def _get_insta_accounts():
+        with get_db_session(SessionLocal) as session:
+            repo = InstagramAccountRepository(session)
+            return repo.list_all()
+
+    accounts = await run_db_async(_get_insta_accounts)
     if not accounts:
         await query.edit_message_text(
             "No Instagram accounts yet. Add one to get started!",
@@ -682,12 +715,17 @@ async def _show_instagram_accounts(query, context: ContextTypes.DEFAULT_TYPE) ->
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 
+def _get_pending_jobs(SessionLocal):
+    """Sync helper: fetch pending/scheduled jobs from DB."""
+    with get_db_session(SessionLocal) as session:
+        repo = VideoJobRepository(session)
+        return repo.get_all_pending_and_scheduled()
+
+
 async def _show_scheduled_tasks(query, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Show pending/scheduled jobs to the user with Cancel buttons."""
     SessionLocal = context.bot_data["SessionLocal"]
-    with get_db_session(SessionLocal) as session:
-        repo = VideoJobRepository(session)
-        jobs = repo.get_all_pending_and_scheduled()
+    jobs = await run_db_async(_get_pending_jobs, SessionLocal)
 
     back_btn = InlineKeyboardMarkup([[InlineKeyboardButton("← Back", callback_data=CB_BACK)]])
     if not jobs:
@@ -732,11 +770,14 @@ async def add_gemini_key_received(update: Update, context: ContextTypes.DEFAULT_
         return ADD_GEMINI_KEY
     SessionLocal = context.bot_data["SessionLocal"]
     try:
-        with get_db_session(SessionLocal) as session:
-            repo = GeminiKeyRepository(session)
-            keys = repo.list_all_ordered()
-            priority = len(keys)
-            repo.add(key, priority=priority)
+        def _add_gemini_key():
+            with get_db_session(SessionLocal) as session:
+                repo = GeminiKeyRepository(session)
+                keys = repo.list_all_ordered()
+                priority = len(keys)
+                repo.add(key, priority=priority)
+
+        await run_db_async(_add_gemini_key)
         menu = await _get_main_menu_for_completion(update, context)
         await update.message.reply_text("Got it! Gemini key added. ✓", reply_markup=menu)
     except Exception:
@@ -817,10 +858,13 @@ async def add_insta_password_received(update: Update, context: ContextTypes.DEFA
         return ConversationHandler.END
     SessionLocal = context.bot_data["SessionLocal"]
     try:
-        with get_db_session(SessionLocal) as session:
-            repo = InstagramAccountRepository(session)
-            model = repo.add(username, password)
-            context.user_data["insta_account_id"] = model.id
+        def _add_insta_account():
+            with get_db_session(SessionLocal) as session:
+                repo = InstagramAccountRepository(session)
+                return repo.add(username, password)
+
+        model = await run_db_async(_add_insta_account)
+        context.user_data["insta_account_id"] = model.id
         await update.message.reply_text(
             f"@{username} saved! Now send a watermark logo image for this account, "
             "or /skip to skip watermark."
@@ -891,10 +935,13 @@ async def add_insta_watermark_received(update: Update, context: ContextTypes.DEF
         return ADD_INSTA_WATERMARK
 
     SessionLocal = context.bot_data["SessionLocal"]
-    with get_db_session(SessionLocal) as session:
-        repo = InstagramAccountRepository(session)
-        repo.update_watermark(account_id, path)
 
+    def _update_watermark():
+        with get_db_session(SessionLocal) as session:
+            repo = InstagramAccountRepository(session)
+            repo.update_watermark(account_id, path)
+
+    await run_db_async(_update_watermark)
     menu = await _get_main_menu_for_completion(update, context)
     await update.message.reply_text(
         f"Done! @{insta_username} added with watermark logo.",
@@ -923,10 +970,13 @@ async def update_insta_watermark_received(update: Update, context: ContextTypes.
         return UPDATE_INSTA_WATERMARK
 
     SessionLocal = context.bot_data["SessionLocal"]
-    with get_db_session(SessionLocal) as session:
-        repo = InstagramAccountRepository(session)
-        repo.update_watermark(account_id, path)
 
+    def _update_watermark():
+        with get_db_session(SessionLocal) as session:
+            repo = InstagramAccountRepository(session)
+            repo.update_watermark(account_id, path)
+
+    await run_db_async(_update_watermark)
     menu = await _get_main_menu_for_completion(update, context)
     await update.message.reply_text("Watermark updated! ✓", reply_markup=menu)
     context.user_data.pop("wm_update_account_id", None)
@@ -944,11 +994,15 @@ async def add_admin_username_received(update: Update, context: ContextTypes.DEFA
         await update.message.reply_text("Username cannot be empty. Send the username to add (without @):")
         return ADD_ADMIN_USERNAME
     SessionLocal = context.bot_data["SessionLocal"]
-    with get_db_session(SessionLocal) as session:
-        repo = SubAdminRepository(session)
-        if repo.exists(username):
-            await update.message.reply_text(f"@{username} is already a sub-admin.")
-            return ConversationHandler.END
+
+    def _check_admin_exists():
+        with get_db_session(SessionLocal) as session:
+            repo = SubAdminRepository(session)
+            return repo.exists(username)
+
+    if await run_db_async(_check_admin_exists):
+        await update.message.reply_text(f"@{username} is already a sub-admin.")
+        return ConversationHandler.END
     context.user_data["new_admin_username"] = username
     context.user_data["new_admin_permissions"] = set()  # Default: no permissions (user picks what to add)
     await update.message.reply_text(
@@ -987,9 +1041,12 @@ async def add_admin_permissions_callback(
             return ADD_ADMIN_PERMISSIONS
         SessionLocal = context.bot_data["SessionLocal"]
         try:
-            with get_db_session(SessionLocal) as session:
-                repo = SubAdminRepository(session)
-                repo.add(username, list(selected))
+            def _add_sub_admin():
+                with get_db_session(SessionLocal) as session:
+                    repo = SubAdminRepository(session)
+                    repo.add(username, list(selected))
+
+            await run_db_async(_add_sub_admin)
             perms_str = _format_permissions_display(list(selected))
             menu = await _get_main_menu_for_completion(update, context)
             await query.edit_message_text(
@@ -1076,9 +1133,13 @@ async def remove_dead_videos_account_picked(
         return ConversationHandler.END
 
     SessionLocal = context.bot_data["SessionLocal"]
-    with get_db_session(SessionLocal) as session:
-        repo = InstagramAccountRepository(session)
-        account = repo.get_by_id(acc_id)
+
+    def _get_insta_account():
+        with get_db_session(SessionLocal) as session:
+            repo = InstagramAccountRepository(session)
+            return repo.get_by_id(acc_id)
+
+    account = await run_db_async(_get_insta_account)
     if not account:
         await query.edit_message_text("Account not found.", reply_markup=creds_menu)
         return ConversationHandler.END
@@ -1116,9 +1177,13 @@ async def remove_admin_username_received(update: Update, context: ContextTypes.D
         await update.message.reply_text("Username cannot be empty. Send the username to remove:")
         return REMOVE_ADMIN_USERNAME
     SessionLocal = context.bot_data["SessionLocal"]
-    with get_db_session(SessionLocal) as session:
-        repo = SubAdminRepository(session)
-        removed = repo.remove(username)
+
+    def _remove_sub_admin():
+        with get_db_session(SessionLocal) as session:
+            repo = SubAdminRepository(session)
+            return repo.remove(username)
+
+    removed = await run_db_async(_remove_sub_admin)
     menu = await _get_main_menu_for_completion(update, context)
     if removed:
         await update.message.reply_text(f"Removed @{username.lower().lstrip('@')} from sub-admins. ✓", reply_markup=menu)
@@ -1142,10 +1207,13 @@ async def upload_urls_received(update: Update, context: ContextTypes.DEFAULT_TYP
 
     context.user_data["urls"] = urls
     SessionLocal = context.bot_data["SessionLocal"]
-    with get_db_session(SessionLocal) as session:
-        repo = InstagramAccountRepository(session)
-        accounts = repo.list_all()
 
+    def _get_accounts():
+        with get_db_session(SessionLocal) as session:
+            repo = InstagramAccountRepository(session)
+            return repo.list_all()
+
+    accounts = await run_db_async(_get_accounts)
     if not accounts:
         await update.message.reply_text(
             "No Instagram accounts set up yet. Add one in Manage credentials (main admin only)."
@@ -1172,12 +1240,16 @@ async def upload_account_picked(update: Update, context: ContextTypes.DEFAULT_TY
     user = update.effective_user
     submitted_by = (user.username or f"user_{user.id}") if user else None
     SessionLocal = context.bot_data["SessionLocal"]
-    with get_db_session(SessionLocal) as session:
-        repo = VideoJobRepository(session)
-        job_ids = create_job(
-            repo, urls, schedule_time=None, instagram_account_id=acc_id,
-            submitted_by_username=submitted_by,
-        )
+
+    def _create_upload_jobs():
+        with get_db_session(SessionLocal) as session:
+            repo = VideoJobRepository(session)
+            return create_job(
+                repo, urls, schedule_time=None, instagram_account_id=acc_id,
+                submitted_by_username=submitted_by,
+            )
+
+    job_ids = await run_db_async(_create_upload_jobs)
     menu = await _get_main_menu_for_completion(update, context)
     await query.edit_message_text(
         f"Uploading! 🎬 {len(job_ids)} video(s) queued – they'll be going live on Instagram shortly.\n\nJob IDs: {job_ids}",
@@ -1202,10 +1274,13 @@ async def schedule_urls_received(update: Update, context: ContextTypes.DEFAULT_T
 
     context.user_data["urls"] = urls
     SessionLocal = context.bot_data["SessionLocal"]
-    with get_db_session(SessionLocal) as session:
-        repo = InstagramAccountRepository(session)
-        accounts = repo.list_all()
 
+    def _get_accounts():
+        with get_db_session(SessionLocal) as session:
+            repo = InstagramAccountRepository(session)
+            return repo.list_all()
+
+    accounts = await run_db_async(_get_accounts)
     if not accounts:
         await update.message.reply_text(
             "No Instagram accounts set up yet. Add one in Manage credentials (main admin only)."
@@ -1364,13 +1439,15 @@ async def schedule_time_picker_callback(
         submitted_by = (user.username or f"user_{user.id}") if user else None
         SessionLocal = context.bot_data["SessionLocal"]
 
-        with get_db_session(SessionLocal) as session:
-            repo = VideoJobRepository(session)
-            job_ids = create_job(
-                repo, urls, schedule_time=schedule_time, instagram_account_id=instagram_account_id,
-                submitted_by_username=submitted_by,
-            )
+        def _create_scheduled_jobs():
+            with get_db_session(SessionLocal) as session:
+                repo = VideoJobRepository(session)
+                return create_job(
+                    repo, urls, schedule_time=schedule_time, instagram_account_id=instagram_account_id,
+                    submitted_by_username=submitted_by,
+                )
 
+        job_ids = await run_db_async(_create_scheduled_jobs)
         menu = await _get_main_menu_for_completion(update, context)
         await query.edit_message_text(
             f"Done! 📅 {len(job_ids)} video(s) scheduled for "
@@ -1420,13 +1497,15 @@ async def schedule_time_received(update: Update, context: ContextTypes.DEFAULT_T
     submitted_by = (user.username or f"user_{user.id}") if user else None
     SessionLocal = context.bot_data["SessionLocal"]
 
-    with get_db_session(SessionLocal) as session:
-        repo = VideoJobRepository(session)
-        job_ids = create_job(
-            repo, urls, schedule_time=schedule_time, instagram_account_id=instagram_account_id,
-            submitted_by_username=submitted_by,
-        )
+    def _create_scheduled_jobs():
+        with get_db_session(SessionLocal) as session:
+            repo = VideoJobRepository(session)
+            return create_job(
+                repo, urls, schedule_time=schedule_time, instagram_account_id=instagram_account_id,
+                submitted_by_username=submitted_by,
+            )
 
+    job_ids = await run_db_async(_create_scheduled_jobs)
     bd_time = schedule_time.astimezone(BANGLADESH_TZ)
     menu = await _get_main_menu_for_completion(update, context)
     await update.message.reply_text(
@@ -1479,12 +1558,9 @@ async def clear_all_jobs_confirm_callback(update: Update, context: ContextTypes.
     try:
         if pause_event:
             pause_event.set()
-            await asyncio.sleep(4)
+            await asyncio.sleep(6)
         SessionLocal = context.bot_data["SessionLocal"]
-        count = await asyncio.wait_for(
-            asyncio.to_thread(_delete_all_jobs_sync, SessionLocal),
-            timeout=15.0,
-        )
+        count = await run_db_async(_delete_all_jobs_sync, SessionLocal, timeout=15.0)
         await query.edit_message_text(
             f"Cleared {count} jobs. ✓",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("← Back", callback_data=CB_VIEW)]]),
@@ -1536,14 +1612,18 @@ async def cancel_job_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     try:
         job_id = int(query.data[len(CB_CANCEL_JOB_PREFIX):])
         SessionLocal = context.bot_data["SessionLocal"]
-        cancelled = False
-        with get_db_session(SessionLocal) as session:
-            repo = VideoJobRepository(session)
-            job = repo.get_by_id(job_id)
-            if job and job.status == "pending":
-                job.status = "cancelled"
-                repo.update(job)
-                cancelled = True
+
+        def _cancel_job():
+            with get_db_session(SessionLocal) as session:
+                repo = VideoJobRepository(session)
+                job = repo.get_by_id(job_id)
+                if job and job.status == "pending":
+                    job.status = "cancelled"
+                    repo.update(job)
+                    return True
+            return False
+
+        cancelled = await run_db_async(_cancel_job)
         if cancelled:
             await query.answer("Job cancelled")
             await _show_scheduled_tasks(query, context)
@@ -1562,20 +1642,27 @@ async def retry_job_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     try:
         job_id = int(query.data[len(CB_RETRY_JOB_PREFIX):])
         SessionLocal = context.bot_data["SessionLocal"]
-        with get_db_session(SessionLocal) as session:
-            repo = VideoJobRepository(session)
-            job = repo.get_by_id(job_id)
-            if job and job.status == "failed":
-                job.status = "pending"
-                job.error_message = None
-                repo.update(job)
-                await query.answer("Job queued for retry")
-                await query.edit_message_text(
-                    query.message.text + "\n\n✓ Queued for retry.",
-                    reply_markup=None,
-                )
-            else:
-                await query.answer("Job not found or already retried", show_alert=True)
+
+        def _retry_job():
+            with get_db_session(SessionLocal) as session:
+                repo = VideoJobRepository(session)
+                job = repo.get_by_id(job_id)
+                if job and job.status == "failed":
+                    job.status = "pending"
+                    job.error_message = None
+                    repo.update(job)
+                    return True
+            return False
+
+        retried = await run_db_async(_retry_job)
+        if retried:
+            await query.answer("Job queued for retry")
+            await query.edit_message_text(
+                query.message.text + "\n\n✓ Queued for retry.",
+                reply_markup=None,
+            )
+        else:
+            await query.answer("Job not found or already retried", show_alert=True)
     except (ValueError, Exception) as e:
         logger.exception("Retry job failed: %s", e)
         await query.answer("Could not retry job", show_alert=True)

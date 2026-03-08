@@ -1,11 +1,13 @@
 """Database session factory and connection management."""
 
+import asyncio
 import json
 from contextlib import contextmanager
 from typing import Generator
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from app.infrastructure.database.models import Base
 
@@ -19,13 +21,11 @@ def _table_has_column(conn, table: str, column: str) -> bool:
 def create_engine_and_session(database_url: str):
     """Create engine and session factory."""
     connect_args = {"check_same_thread": False}
+    engine_kwargs = {"connect_args": connect_args, "pool_pre_ping": True}
     if database_url.startswith("sqlite"):
         connect_args["timeout"] = 60  # Wait up to 60s for lock (avoids "database is locked")
-    engine = create_engine(
-        database_url,
-        connect_args=connect_args,
-        pool_pre_ping=True,
-    )
+        engine_kwargs["poolclass"] = StaticPool  # Single connection, serialized access
+    engine = create_engine(database_url, **engine_kwargs)
     if database_url.startswith("sqlite"):
         from sqlalchemy import event
 
@@ -90,12 +90,19 @@ def get_db_session(SessionLocal: sessionmaker) -> Generator[Session, None, None]
 def is_database_locked_error(exc: BaseException) -> bool:
     """Check if exception is due to SQLite database locked."""
     msg = str(exc).lower()
-    if "database is locked" in msg or "database_locked" in msg:
+    if "database is locked" in msg or "database_locked" in msg or "database busy" in msg:
         return True
     cause = getattr(exc, "__cause__", None)
     if cause is not None:
         return is_database_locked_error(cause)
     return False
+
+
+async def run_db_async(sync_fn, *args, timeout: float = 15.0):
+    """Run sync DB function in thread with retry on locked. Use in async handlers."""
+    def _with_retry():
+        return retry_on_locked(lambda: sync_fn(*args))
+    return await asyncio.wait_for(asyncio.to_thread(_with_retry), timeout=timeout)
 
 
 def retry_on_locked(callable_fn, max_retries: int = 5, base_delay: float = 1.0):
