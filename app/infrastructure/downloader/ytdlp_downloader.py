@@ -50,17 +50,25 @@ def _convert_to_mp4(path: str) -> str:
     if p.suffix.lower() == ".mp4":
         return path
     mp4_path = p.with_suffix(".mp4")
+    # Try stream copy first (fast). If that fails (e.g. webm VP8/VP9), re-encode to H.264.
     try:
         subprocess.run(
             ["ffmpeg", "-y", "-i", path, "-c", "copy", str(mp4_path)],
             check=True,
             capture_output=True,
         )
-        p.unlink(missing_ok=True)
-        return str(mp4_path)
-    except (subprocess.CalledProcessError, FileNotFoundError) as e:
-        logger.warning("ffmpeg conversion failed: %s. Using original file.", e)
-        return path
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        try:
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", path, "-c:v", "libx264", "-c:a", "aac", str(mp4_path)],
+                check=True,
+                capture_output=True,
+            )
+        except (subprocess.CalledProcessError, FileNotFoundError) as e:
+            logger.warning("ffmpeg conversion failed: %s. Using original file.", e)
+            return path
+    p.unlink(missing_ok=True)
+    return str(mp4_path)
 
 
 class YtDlpDownloader:
