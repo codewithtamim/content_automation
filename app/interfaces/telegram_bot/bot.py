@@ -2,7 +2,7 @@
 
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -107,6 +107,9 @@ CB_PERM_VIEW = "perm_view"
 CB_PERM_MANAGE_ADMINS = "perm_manage_admins"
 CB_PERM_MANAGE_CREDS = "perm_manage_creds"
 CB_PERM_DONE = "perm_done"
+
+# Time picker (telegraf-time-picker style)
+CB_TP_PREFIX = "tp_"
 
 
 def _get_sub_admin_usernames(context: ContextTypes.DEFAULT_TYPE) -> set[str]:
@@ -221,6 +224,46 @@ def _build_manage_creds_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("List Instagram accounts", callback_data=CB_LIST_INSTA)],
         [InlineKeyboardButton("← Back", callback_data=CB_BACK)],
     ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def _build_time_picker_keyboard(hour: int, minute: int, day_offset: int = 0) -> InlineKeyboardMarkup:
+    """
+    Build inline time picker keyboard (telegraf-time-picker style).
+    hour: 0-23, minute: 0,5,10,...,55, day_offset: 0=today, 1=tomorrow.
+    """
+    minute = (minute // 5) * 5  # Snap to 5-min steps
+    hour = max(0, min(23, hour))
+    minute = max(0, min(55, minute))
+    day_offset = max(0, min(1, day_offset))
+
+    def _cb(action: str) -> str:
+        return f"{CB_TP_PREFIX}{action}_{hour}_{minute}_{day_offset}"
+
+    # Row 1: Date (Today / Tomorrow)
+    date_row = [
+        InlineKeyboardButton("✓ Today" if day_offset == 0 else "Today", callback_data=_cb("d0")),
+        InlineKeyboardButton("✓ Tomorrow" if day_offset == 1 else "Tomorrow", callback_data=_cb("d1")),
+    ]
+    # Row 2: Hour display and controls
+    hour_row = [
+        InlineKeyboardButton("−", callback_data=_cb("h-")),
+        InlineKeyboardButton(f"{hour:02d}", callback_data=f"{CB_TP_PREFIX}noop"),
+        InlineKeyboardButton("+", callback_data=_cb("h+")),
+    ]
+    # Row 3: Minute display and controls
+    min_row = [
+        InlineKeyboardButton("−", callback_data=_cb("m-")),
+        InlineKeyboardButton(f"{minute:02d}", callback_data=f"{CB_TP_PREFIX}noop"),
+        InlineKeyboardButton("+", callback_data=_cb("m+")),
+    ]
+    # Row 4: Submit / Cancel
+    submit_row = [
+        InlineKeyboardButton("✓ Confirm", callback_data=_cb("ok")),
+        InlineKeyboardButton("Cancel", callback_data=f"{CB_TP_PREFIX}cancel"),
+    ]
+
+    keyboard = [date_row, hour_row, min_row, submit_row]
     return InlineKeyboardMarkup(keyboard)
 
 
@@ -766,7 +809,7 @@ async def schedule_urls_received(update: Update, context: ContextTypes.DEFAULT_T
 
 
 async def schedule_account_picked(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle account selection for schedule - then ask for time."""
+    """Handle account selection for schedule - then show time picker."""
     query = update.callback_query
     await query.answer()
     data = query.data or ""
@@ -774,10 +817,137 @@ async def schedule_account_picked(update: Update, context: ContextTypes.DEFAULT_
         return ConversationHandler.END
     acc_id = int(data[len(CB_ACCOUNT_PREFIX) :])
     context.user_data["instagram_account_id"] = acc_id
+
+    # Default: today, 2:00 PM Bangladesh time
+    now_bd = datetime.now(BANGLADESH_TZ)
+    hour, minute = 14, 0
+    if 0 <= now_bd.hour < 24 and 0 <= now_bd.minute < 60:
+        hour = now_bd.hour
+        minute = (now_bd.minute // 5) * 5
+
     await query.edit_message_text(
         "When should we post? (Bangladesh time)\n\n"
-        "Format: month day time am/pm\n"
-        "e.g. 3 8 2:30 pm or 12-25 9:00 am"
+        "Use the picker below or type: month day time am/pm\n"
+        "e.g. 3 8 2:30 pm",
+        reply_markup=_build_time_picker_keyboard(hour, minute, day_offset=0),
+    )
+    return SCHEDULE_TIME
+
+
+def _parse_time_picker_callback(data: str) -> tuple[str, int, int, int] | None:
+    """Parse tp_{action}_{hour}_{minute}_{day_offset}. Returns (action, hour, minute, day_offset) or None."""
+    if not data or not data.startswith(CB_TP_PREFIX):
+        return None
+    rest = data[len(CB_TP_PREFIX) :]
+    if rest == "cancel":
+        return ("cancel", 0, 0, 0)
+    if rest == "noop":
+        return ("noop", 0, 0, 0)
+    parts = rest.split("_")
+    if len(parts) != 4:
+        return None
+    action, h, m, d = parts
+    try:
+        return (action, int(h), int(m), int(d))
+    except ValueError:
+        return None
+
+
+def _apply_time_picker_action(
+    action: str, hour: int, minute: int, day_offset: int
+) -> tuple[int, int, int]:
+    """Apply +/- action and return new (hour, minute, day_offset)."""
+    if action == "h+":
+        return ((hour + 1) % 24, minute, day_offset)
+    if action == "h-":
+        return ((hour - 1) % 24, minute, day_offset)
+    if action == "m+":
+        new_min = minute + 5
+        if new_min >= 60:
+            return ((hour + 1) % 24, 0, day_offset)
+        return (hour, new_min, day_offset)
+    if action == "m-":
+        new_min = minute - 5
+        if new_min < 0:
+            return ((hour - 1) % 24, 55, day_offset)
+        return (hour, new_min, day_offset)
+    if action == "d0":
+        return (hour, minute, 0)
+    if action == "d1":
+        return (hour, minute, 1)
+    return (hour, minute, day_offset)
+
+
+async def schedule_time_picker_callback(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    """Handle time picker button callbacks (hour/date +/- , confirm, cancel)."""
+    admin_chat_id = context.bot_data["admin_chat_id"]
+    admin_username = context.bot_data["admin_username"]
+    sub_admin_usernames = _get_sub_admin_usernames(context)
+    if not is_admin(update, admin_chat_id, admin_username, sub_admin_usernames):
+        return ConversationHandler.END
+
+    query = update.callback_query
+    parsed = _parse_time_picker_callback(query.data or "")
+    if not parsed:
+        await query.answer()
+        return SCHEDULE_TIME
+
+    action, hour, minute, day_offset = parsed
+
+    if action == "noop":
+        await query.answer()
+        return SCHEDULE_TIME
+
+    if action == "cancel":
+        await query.answer()
+        context.user_data.clear()
+        main_admin, sub_perms = _get_current_user_permissions(update, context)
+        await query.edit_message_text(
+            "Cancelled. No worries!",
+            reply_markup=build_main_menu_keyboard(main_admin, sub_perms),
+        )
+        return ConversationHandler.END
+
+    if action == "ok":
+        await query.answer()
+        # Build schedule_time from hour, minute, day_offset (Bangladesh time)
+        now_bd = datetime.now(BANGLADESH_TZ)
+        target_date = now_bd.date()
+        if day_offset == 1:
+            target_date = target_date + timedelta(days=1)
+        dt_bd = datetime(
+            target_date.year, target_date.month, target_date.day,
+            hour, minute, 0, tzinfo=BANGLADESH_TZ,
+        )
+        schedule_time = dt_bd.astimezone(timezone.utc)
+
+        urls = context.user_data.get("urls", [])
+        instagram_account_id = context.user_data.get("instagram_account_id")
+        user = update.effective_user
+        submitted_by = (user.username or f"user_{user.id}") if user else None
+        SessionLocal = context.bot_data["SessionLocal"]
+
+        with get_db_session(SessionLocal) as session:
+            repo = VideoJobRepository(session)
+            job_ids = create_job(
+                repo, urls, schedule_time=schedule_time, instagram_account_id=instagram_account_id,
+                submitted_by_username=submitted_by,
+            )
+
+        await query.edit_message_text(
+            f"Done! 📅 {len(job_ids)} video(s) scheduled for "
+            f"{dt_bd.strftime('%b %d, %Y %I:%M %p')} (BD time). They'll post automatically!\n\nJob IDs: {job_ids}"
+        )
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    # h+, h-, m+, m-, d0, d1: update keyboard
+    new_hour, new_minute, new_day = _apply_time_picker_action(action, hour, minute, day_offset)
+    await query.answer()
+    await query.edit_message_reply_markup(
+        reply_markup=_build_time_picker_keyboard(new_hour, new_minute, new_day),
     )
     return SCHEDULE_TIME
 
@@ -909,6 +1079,10 @@ def create_application(
                 CallbackQueryHandler(schedule_account_picked),
             ],
             SCHEDULE_TIME: [
+                CallbackQueryHandler(
+                    schedule_time_picker_callback,
+                    pattern=f"^{CB_TP_PREFIX}",
+                ),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, schedule_time_received),
             ],
             ADD_ADMIN_USERNAME: [
