@@ -9,6 +9,13 @@ import ffmpeg
 logger = logging.getLogger(__name__)
 
 
+def _get_video_width(video_path: str) -> int:
+    """Probe the video to get its width in pixels."""
+    probe = ffmpeg.probe(video_path, select_streams="v:0")
+    stream = probe["streams"][0]
+    return int(stream["width"])
+
+
 def add_watermark(video_path: str, logo_path: str) -> str:
     """
     Overlay a logo at the bottom-center of a video.
@@ -27,11 +34,13 @@ def add_watermark(video_path: str, logo_path: str) -> str:
     p = Path(video_path)
     out_path = p.with_stem(p.stem + "_wm")
 
+    video_w = _get_video_width(video_path)
+    logo_w = max(2, (video_w * 15 // 100) // 2 * 2)  # 15% of video width, even number
+
     video = ffmpeg.input(video_path)
     logo = ffmpeg.input(logo_path)
 
-    # Scale logo to 15% of the video width, keep aspect ratio
-    logo_scaled = logo.filter("scale", w="trunc(main_w*0.15/2)*2", h="-1")
+    logo_scaled = logo.filter("scale", w=logo_w, h=-1)
 
     overlaid = ffmpeg.overlay(
         video.video,
@@ -55,7 +64,6 @@ def add_watermark(video_path: str, logo_path: str) -> str:
         logger.error("Watermark failed: %s", e.stderr)
         raise
 
-    # Replace original with watermarked version
     os.replace(str(out_path), video_path)
     logger.info("Watermarked video: %s", video_path)
     return video_path
