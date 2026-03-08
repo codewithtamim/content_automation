@@ -26,6 +26,10 @@ if [ ! -d "venv" ]; then
 fi
 source venv/bin/activate
 
+# ── Set Android API level for Rust/maturin builds ────────────────────
+# maturin (used by pydantic-core) needs this to compile on Termux.
+export ANDROID_API_LEVEL=$(getprop ro.build.version.sdk)
+
 # ── Python dependencies ──────────────────────────────────────────────
 pip install --upgrade pip
 
