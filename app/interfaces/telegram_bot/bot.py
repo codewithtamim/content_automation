@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 BANGLADESH_TZ = ZoneInfo("Asia/Dhaka")
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.error import Conflict
+from telegram.error import BadRequest, Conflict
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -688,25 +688,30 @@ async def _show_scheduled_tasks(query, context: ContextTypes.DEFAULT_TYPE) -> No
 
     back_btn = InlineKeyboardMarkup([[InlineKeyboardButton("← Back", callback_data=CB_BACK)]])
     if not jobs:
-        await query.edit_message_text("No pending or scheduled tasks. All clear! ✓", reply_markup=back_btn)
-        return
-
-    lines = []
-    keyboard = []
-    for j in jobs[:20]:
-        if j.schedule_time:
-            dt = j.schedule_time if j.schedule_time.tzinfo else j.schedule_time.replace(tzinfo=timezone.utc)
-            bd = dt.astimezone(BANGLADESH_TZ)
-            schedule_str = bd.strftime("%b %d, %I:%M %p")
-        else:
-            schedule_str = "ASAP"
-        lines.append(f"• [{j.id}] {j.original_url[:50]}... @ {schedule_str}")
-        keyboard.append([InlineKeyboardButton(f"Cancel #{j.id}", callback_data=f"{CB_CANCEL_JOB_PREFIX}{j.id}")])
-    keyboard.append([InlineKeyboardButton("← Back", callback_data=CB_BACK)])
-    text = "Scheduled tasks:\n\n" + "\n".join(lines)
-    if len(jobs) > 20:
-        text += f"\n\n... and {len(jobs) - 20} more"
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        text = "No pending or scheduled tasks. All clear! ✓"
+        reply_markup = back_btn
+    else:
+        lines = []
+        keyboard = []
+        for j in jobs[:20]:
+            if j.schedule_time:
+                dt = j.schedule_time if j.schedule_time.tzinfo else j.schedule_time.replace(tzinfo=timezone.utc)
+                bd = dt.astimezone(BANGLADESH_TZ)
+                schedule_str = bd.strftime("%b %d, %I:%M %p")
+            else:
+                schedule_str = "ASAP"
+            lines.append(f"• [{j.id}] {j.original_url[:50]}... @ {schedule_str}")
+            keyboard.append([InlineKeyboardButton(f"Cancel #{j.id}", callback_data=f"{CB_CANCEL_JOB_PREFIX}{j.id}")])
+        keyboard.append([InlineKeyboardButton("← Back", callback_data=CB_BACK)])
+        text = "Scheduled tasks:\n\n" + "\n".join(lines)
+        if len(jobs) > 20:
+            text += f"\n\n... and {len(jobs) - 20} more"
+        reply_markup = InlineKeyboardMarkup(keyboard)
+    try:
+        await query.edit_message_text(text, reply_markup=reply_markup)
+    except BadRequest as e:
+        if "Message is not modified" not in str(e):
+            raise
 
 
 async def add_gemini_key_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1453,16 +1458,19 @@ async def cancel_job_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     try:
         job_id = int(query.data[len(CB_CANCEL_JOB_PREFIX):])
         SessionLocal = context.bot_data["SessionLocal"]
+        cancelled = False
         with get_db_session(SessionLocal) as session:
             repo = VideoJobRepository(session)
             job = repo.get_by_id(job_id)
             if job and job.status == "pending":
                 job.status = "cancelled"
                 repo.update(job)
-                await query.answer("Job cancelled")
-                await _show_scheduled_tasks(query, context)
-            else:
-                await query.answer("Job not found or already processed", show_alert=True)
+                cancelled = True
+        if cancelled:
+            await query.answer("Job cancelled")
+            await _show_scheduled_tasks(query, context)
+        else:
+            await query.answer("Job not found or already processed", show_alert=True)
     except (ValueError, Exception) as e:
         logger.exception("Cancel job failed: %s", e)
         await query.answer("Could not cancel job", show_alert=True)
