@@ -127,6 +127,8 @@ def run_worker(
                 if stop_event.is_set():
                     break
                 try:
+                    # Use short session for setup only - release before long-running process_job
+                    account_data = None
                     with get_db_session(SessionLocal) as session:
                         repo = VideoJobRepository(session)
                         insta_repo = InstagramAccountRepository(session)
@@ -161,9 +163,6 @@ def run_worker(
                             )
                             continue
 
-                        username, password, watermark_path = account
-                        instagram_uploader = InstagramUploader(username=username, password=password)
-
                         if not gemini_keys:
                             err = "No Gemini API keys configured"
                             logger.error("No Gemini API keys configured. Add keys via bot.")
@@ -177,33 +176,39 @@ def run_worker(
                             )
                             continue
 
-                        logger.info("Processing job %s: %s", job.id, job.original_url)
+                        account_data = (account[0], account[1], account[2])  # username, password, watermark_path
 
-                        def _generate_metadata(title: str, tags: list[str]):
-                            return generate_metadata_with_failover(
-                                gemini_keys, title, tags, model_name=gemini_model
-                            )
+                    # Session closed - process_job uses its own short sessions
+                    username, password, watermark_path = account_data
+                    instagram_uploader = InstagramUploader(username=username, password=password)
 
-                        completed_job = process_job(
-                            job_id=job.id,
-                            repository=repo,
-                            downloader=downloader,
-                            metadata_client=None,
-                            instagram_uploader=instagram_uploader,
-                            generate_metadata_fn=_generate_metadata,
-                            logo_path=watermark_path,
-                            SessionLocal=SessionLocal,
+                    logger.info("Processing job %s: %s", job.id, job.original_url)
+
+                    def _generate_metadata(title: str, tags: list[str]):
+                        return generate_metadata_with_failover(
+                            gemini_keys, title, tags, model_name=gemini_model
                         )
-                        logger.info("Job %s completed successfully", job.id)
-                        _notify_admin_job_completed(
-                            completed_job.id,
-                            completed_job.original_url,
-                            completed_job.generated_title,
-                            completed_job.submitted_by_username,
-                            admin_telegram_chat_id,
-                            telegram_bot_token,
-                        )
-                        time.sleep(UPLOAD_DELAY_SECONDS)
+
+                    completed_job = process_job(
+                        job_id=job.id,
+                        repository=None,
+                        downloader=downloader,
+                        metadata_client=None,
+                        instagram_uploader=instagram_uploader,
+                        generate_metadata_fn=_generate_metadata,
+                        logo_path=watermark_path,
+                        SessionLocal=SessionLocal,
+                    )
+                    logger.info("Job %s completed successfully", job.id)
+                    _notify_admin_job_completed(
+                        completed_job.id,
+                        completed_job.original_url,
+                        completed_job.generated_title,
+                        completed_job.submitted_by_username,
+                        admin_telegram_chat_id,
+                        telegram_bot_token,
+                    )
+                    time.sleep(UPLOAD_DELAY_SECONDS)
                 except Exception as e:
                     logger.exception("Job %s failed: %s", job.id, e)
                     marked = False
