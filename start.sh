@@ -1,6 +1,8 @@
 #!/data/data/com.termux/files/usr/bin/bash
 set -e
 
+cd "$(dirname "$0")"
+
 echo "=== TiktokAutomation - Termux Setup ==="
 
 # ── Install system packages ──────────────────────────────────────────
@@ -69,9 +71,10 @@ fi
 # ── Data directories ─────────────────────────────────────────────────
 mkdir -p data
 
-# ── Clear bytecode cache (force fresh run) ────────────────────────────
-find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+# ── Clear app bytecode cache (force fresh run) ───────────────────────
+find . -path ./venv -prune -o -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 
-# ── Run ──────────────────────────────────────────────────────────────
+# ── Run (PYTHONDONTWRITEBYTECODE=1 prevents writing .pyc, always uses .py) ─
 echo "Starting bot..."
+export PYTHONDONTWRITEBYTECODE=1
 PYTHONPATH=. python -m app.main
