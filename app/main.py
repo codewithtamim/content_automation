@@ -4,9 +4,9 @@ import logging
 import signal
 import sys
 import threading
-from pathlib import Path
 
 from config import get_settings
+from app.infrastructure.config_paths import get_cookies_path
 from app.infrastructure.database.session import create_engine_and_session, init_db
 from app.infrastructure.scheduler.worker import run_worker
 from app.interfaces.telegram_bot.bot import create_application
@@ -49,11 +49,8 @@ def main() -> None:
     worker_thread.start()
     logger.info("Worker thread started")
 
-    # Resolve cookies path (same logic as worker)
-    cookies_path = Path(settings.yt_cookies_path)
-    if not cookies_path.is_absolute():
-        project_root = Path(__file__).resolve().parents[1]
-        cookies_path = project_root / settings.yt_cookies_path
+    cookies_path = get_cookies_path(settings.yt_cookies_path)
+    logger.info("Cookies path: %s", cookies_path)
 
     # Create Telegram bot
     app = create_application(

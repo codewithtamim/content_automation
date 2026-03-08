@@ -627,16 +627,23 @@ async def add_cookies_received(update: Update, context: ContextTypes.DEFAULT_TYP
         return ConversationHandler.END
 
     try:
+        from pathlib import Path
+
+        path = Path(cookies_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+
         doc = update.message.document
         file = await context.bot.get_file(doc.file_id)
-        await file.download_to_drive(cookies_path)
+        await file.download_to_drive(custom_path=str(path))
+        logger.info("Cookies saved to %s (%d bytes)", path, path.stat().st_size)
+
         menu = await _get_main_menu_for_completion(update, context)
         await update.message.reply_text(
             "Cookies file saved! ✓ yt-dlp will use it for YouTube downloads.",
             reply_markup=menu,
         )
     except Exception as e:
-        logger.exception("Failed to save cookies file: %s", e)
+        logger.exception("Failed to save cookies file to %s: %s", cookies_path, e)
         await update.message.reply_text(f"Couldn't save the file: {e}")
     return ConversationHandler.END
 

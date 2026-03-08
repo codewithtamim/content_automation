@@ -4,7 +4,6 @@ import logging
 import threading
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 
 from app.application.use_cases.process_job import process_job
 from app.infrastructure.ai.gemini_client import generate_metadata_with_failover
@@ -15,6 +14,7 @@ from app.infrastructure.database.repository import (
     VideoJobRepository,
 )
 from app.infrastructure.database.session import get_db_session
+from app.infrastructure.config_paths import get_cookies_path
 from app.infrastructure.downloader.ytdlp_downloader import YtDlpDownloader
 from app.infrastructure.uploaders.instagram_uploader import InstagramUploader
 
@@ -42,6 +42,8 @@ def _notify_admin_job_failed(
         f"URL: {original_url}\n\n"
         f"Error: {error_message}"
     )
+    if "sign in to confirm" in error_message.lower() or "cookies" in error_message.lower():
+        msg += "\n\nTip: Upload fresh YouTube cookies via Manage credentials → Upload YouTube cookies"
     notify_admin(bot_token, admin_chat_id, msg)
 
 
@@ -60,11 +62,8 @@ def run_worker(
     Loads Gemini keys and Instagram accounts from DB. Processes jobs using
     credentials from DB.
     """
-    # Resolve cookies path: if relative, use project root (same dir as config.py, cookies.txt)
-    cookies_path = Path(yt_cookies_path)
-    if not cookies_path.is_absolute():
-        project_root = Path(__file__).resolve().parents[3]
-        cookies_path = project_root / yt_cookies_path
+    cookies_path = get_cookies_path(yt_cookies_path)
+    logger.info("Worker cookies path: %s", cookies_path)
 
     downloader = YtDlpDownloader(
         storage_path=video_storage_path,

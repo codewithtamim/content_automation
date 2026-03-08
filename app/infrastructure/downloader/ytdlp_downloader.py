@@ -69,6 +69,13 @@ class YtDlpDownloader:
         }
         if self.cookies_path and self.cookies_path.exists() and self.cookies_path.stat().st_size > 0:
             ydl_opts["cookiefile"] = str(self.cookies_path)
+            logger.info("Using cookies from %s", self.cookies_path)
+        elif self.cookies_path:
+            logger.warning(
+                "Cookies file missing or empty at %s. YouTube may block downloads. "
+                "Upload cookies via bot: Manage credentials → Upload YouTube cookies",
+                self.cookies_path,
+            )
 
         extracted_info = {}
 
