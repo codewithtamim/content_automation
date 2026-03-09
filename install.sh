@@ -31,7 +31,7 @@ export ANDROID_API_LEVEL=$(getprop ro.build.version.sdk)
 # ── Python dependencies ──────────────────────────────────────────────
 pip install --upgrade pip
 pip install \
-    "python-telegram-bot>=22.6" \
+    "python-telegram-bot[webhooks]>=22.6" \
     "yt-dlp[default]>=2026.3.3" \
     "sqlalchemy>=2.0.48" \
     "ffmpeg-python>=0.2.0" \

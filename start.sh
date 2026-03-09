@@ -38,7 +38,7 @@ pip install --upgrade pip
 
 # Step 1: Core deps (pure-python wheels, installs fast)
 pip install \
-    "python-telegram-bot>=22.6" \
+    "python-telegram-bot[webhooks]>=22.6" \
     "yt-dlp[default]>=2026.3.3" \
     "sqlalchemy>=2.0.48" \
     "ffmpeg-python>=0.2.0" \

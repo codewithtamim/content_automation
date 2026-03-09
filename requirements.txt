@@ -1,5 +1,5 @@
-# Telegram Bot
-python-telegram-bot>=22.6
+# Telegram Bot (webhooks extra required for run_webhook)
+python-telegram-bot[webhooks]>=22.6
 
 # Video Download (default extra includes yt-dlp-ejs for YouTube JS challenge solving)
 yt-dlp[default]>=2026.3.3
