@@ -24,14 +24,24 @@ def parse_urls(text: str) -> list[str]:
     return urls
 
 
+# Unicode pipe variants that may appear when pasting (e.g. from rich text)
+PIPE_CHARS = "|\uFF5C\u01C0\u2223\u2758"  # ASCII |, fullwidth ｜, etc.
+
+
 def parse_urls_with_schedule(text: str) -> list[tuple[str, str | None]]:
     """
     Parse URLs with optional per-link schedule time.
     Format: link | schedule time (one per line, or comma-separated).
     Returns list of (url, schedule_str_or_none). schedule_str is raw text after | for caller to parse.
     """
+    # Normalize Unicode pipe variants to ASCII pipe for reliable splitting
+    normalized = text
+    for pc in PIPE_CHARS:
+        if pc != "|":
+            normalized = normalized.replace(pc, "|")
+
     result: list[tuple[str, str | None]] = []
-    for part in re.split(r"[\n,]+", text.strip()):
+    for part in re.split(r"[\n,]+", normalized.strip()):
         part = part.strip()
         if not part:
             continue

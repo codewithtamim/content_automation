@@ -112,7 +112,12 @@ def _parse_schedule_time_bd(text: str) -> datetime | None:
 
 def _parse_schedule_time(text: str) -> datetime | None:
     """Parse schedule time: try BD formats first, then ISO (YYYY-MM-DD HH:MM)."""
-    text = (text or "").strip()
+    if not text:
+        return None
+    # Remove zero-width chars and normalize whitespace (Telegram/copy-paste can add these)
+    text = (text or "").strip().replace("\u00a0", " ")  # non-breaking space -> space
+    text = re.sub(r"[\u200b-\u200d\ufeff\u00ad]", "", text)
+    text = " ".join(text.split())
     if not text:
         return None
     result = _parse_schedule_time_bd(text)
