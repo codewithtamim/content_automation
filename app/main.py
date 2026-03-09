@@ -99,12 +99,40 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _sigterm_handler)
 
     try:
-        logger.info("Starting Telegram bot (Instagram only)")
-        app.run_polling(
-            allowed_updates=["message", "callback_query"],
-            drop_pending_updates=True,
-        )
-        logger.warning("run_polling returned unexpectedly - bot stopped")
+        mode = (settings.telegram_mode or "polling").strip().lower()
+        if mode == "webhook":
+            if not settings.webhook_secret_token:
+                raise ValueError(
+                    "WEBHOOK_SECRET_TOKEN is required when TELEGRAM_MODE=webhook. "
+                    "Generate with: openssl rand -hex 32"
+                )
+            if not settings.webhook_public_url:
+                raise ValueError(
+                    "WEBHOOK_PUBLIC_URL is required when TELEGRAM_MODE=webhook. "
+                    "Set it to your cloudflared URL (e.g. https://xxx.trycloudflare.com/webhook)"
+                )
+            logger.info(
+                "Starting Telegram bot (webhook) on %s:%s/%s",
+                "127.0.0.1",
+                settings.webhook_port,
+                settings.webhook_url_path,
+            )
+            app.run_webhook(
+                listen="127.0.0.1",
+                port=settings.webhook_port,
+                url_path=settings.webhook_url_path,
+                secret_token=settings.webhook_secret_token,
+                webhook_url=settings.webhook_public_url,
+                allowed_updates=["message", "callback_query"],
+                drop_pending_updates=True,
+            )
+        else:
+            logger.info("Starting Telegram bot (Instagram only, polling)")
+            app.run_polling(
+                allowed_updates=["message", "callback_query"],
+                drop_pending_updates=True,
+            )
+        logger.warning("Bot stopped unexpectedly")
     except KeyboardInterrupt:
         logger.info("Shutting down...")
         _worker_stop_event.set()

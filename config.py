@@ -17,6 +17,15 @@ class Settings(BaseSettings):
     admin_telegram_chat_id: str
     admin_telegram_username: str
 
+    # Telegram mode: "polling" (default) or "webhook"
+    telegram_mode: str = "polling"
+
+    # Webhook (when telegram_mode=webhook). Required: webhook_secret_token.
+    webhook_port: int = 8080
+    webhook_url_path: str = "webhook"
+    webhook_secret_token: str | None = None
+    webhook_public_url: str | None = None
+
     # Database (SQLite file)
     database_url: str = "sqlite:///data/tiktok_automation.db"
 

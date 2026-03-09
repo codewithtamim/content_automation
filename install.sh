@@ -72,6 +72,12 @@ fi
 # ── Clear app bytecode cache (force fresh run) ───────────────────────
 find . -path ./venv -prune -o -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 
+# ── Set webhook (when TELEGRAM_MODE=webhook) ─────────────────────────
+if grep -q '^TELEGRAM_MODE=webhook' .env 2>/dev/null; then
+    echo "Setting Telegram webhook..."
+    PYTHONPATH=. python scripts/set_webhook.py set 2>/dev/null || true
+fi
+
 # ── Run (PYTHONDONTWRITEBYTECODE=1 prevents writing .pyc, always uses .py) ─
 echo "Starting bot in background..."
 nohup bash -c "source venv/bin/activate && export PYTHONDONTWRITEBYTECODE=1 && PYTHONPATH=. python -m app.main" >> data/app.log 2>&1 &
