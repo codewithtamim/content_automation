@@ -1,6 +1,7 @@
 """Application entrypoint - starts Telegram bot and background worker."""
 
 import logging
+import os
 import signal
 import sys
 import threading
@@ -37,6 +38,8 @@ def main() -> None:
     init_db(engine)
     logger.info("Database initialized")
 
+    video_storage_path = os.path.abspath(os.path.expanduser(settings.video_storage_path))
+
     # Start worker in background thread (credentials loaded from DB)
     worker_thread = threading.Thread(
         target=run_worker,
@@ -44,7 +47,7 @@ def main() -> None:
             "SessionLocal": SessionLocal,
             "engine": engine,
             "pause_event": _worker_pause_event,
-            "video_storage_path": settings.video_storage_path,
+            "video_storage_path": video_storage_path,
             "gemini_model": settings.gemini_model,
             "yt_cookies_path": settings.yt_cookies_path,
             "yt_proxy": settings.yt_proxy,
@@ -72,7 +75,7 @@ def main() -> None:
 
     # Create Telegram bot
     prep_config = {
-        "video_storage_path": settings.video_storage_path,
+        "video_storage_path": video_storage_path,
         "cookies_path": str(cookies_path),
         "yt_proxy": settings.yt_proxy,
         "gemini_model": settings.gemini_model,

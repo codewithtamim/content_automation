@@ -280,6 +280,11 @@ def run_worker(
                 job = pending[0]
                 if stop_event.is_set():
                     pass  # Will break at end of loop
+                elif job.schedule_time is not None and job.schedule_time > now:
+                    logger.debug(
+                        "Skipping job %s: schedule_time %s is in the future (now=%s)",
+                        job.id, job.schedule_time, now,
+                    )
                 else:
                     account_data = None
                     try:

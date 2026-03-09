@@ -98,12 +98,17 @@ class YtDlpDownloader:
             "outtmpl": output_template,
             "noplaylist": True,
             "logger": logger,
+            "merge_output_format": "mp4",
         }
         if self.max_resolution and self.max_resolution > 0:
             opts["format"] = (
+                f"best[ext=mp4][height<={self.max_resolution}]/"
+                f"best[height<={self.max_resolution}]/"
                 f"bestvideo[height<={self.max_resolution}]+bestaudio/"
                 f"bestvideo[height<={self.max_resolution}]/best[height<={self.max_resolution}]/best"
             )
+        else:
+            opts["format"] = "best[ext=mp4]/best"
         js_runtimes = _get_js_runtimes()
         if js_runtimes:
             opts["js_runtimes"] = js_runtimes

@@ -1322,6 +1322,8 @@ async def add_videos_urls_received(update: Update, context: ContextTypes.DEFAULT
     for url, schedule_str in parsed:
         if schedule_str:
             dt = _parse_schedule_time(schedule_str)
+            if dt is None:
+                logger.warning("Schedule parse failed for %r, treating as upload now: %s", schedule_str, url[:60])
             url_schedule_pairs.append((url, dt))
         else:
             url_schedule_pairs.append((url, None))
@@ -1367,6 +1369,10 @@ async def add_videos_urls_received(update: Update, context: ContextTypes.DEFAULT
                 if immediate_count:
                     parts.append(f"{immediate_count} uploading now")
                 msg = f"Done! {' + '.join(parts)}.\n\nJob IDs: {job_ids}"
+                first_scheduled = next((st for _, st in url_schedule_pairs if st is not None), None)
+                if first_scheduled:
+                    bd_time = first_scheduled.astimezone(BANGLADESH_TZ)
+                    msg += f"\n\nFirst: {bd_time.strftime('%b %d, %I:%M %p')} (BD time)"
                 await update.message.reply_text(msg, reply_markup=menu)
             context.user_data.clear()
             return ConversationHandler.END
@@ -1434,6 +1440,10 @@ async def add_videos_account_picked(update: Update, context: ContextTypes.DEFAUL
             if immediate_count:
                 parts.append(f"{immediate_count} uploading now")
             msg = f"Done! {' + '.join(parts)}.\n\nJob IDs: {job_ids}"
+            first_scheduled = next((st for _, st in url_schedule_pairs if st is not None), None)
+            if first_scheduled:
+                bd_time = first_scheduled.astimezone(BANGLADESH_TZ)
+                msg += f"\n\nFirst: {bd_time.strftime('%b %d, %I:%M %p')} (BD time)"
             await query.edit_message_text(msg, reply_markup=menu)
         context.user_data.clear()
         return ConversationHandler.END
@@ -1511,6 +1521,9 @@ async def _create_jobs_with_schedules(
                     repo, [url], schedule_time=schedule_time, instagram_account_id=acc_id,
                     submitted_by_username=submitted_by,
                 )
+                for jid in ids:
+                    if schedule_time is not None:
+                        logger.info("Created job %s with schedule_time=%s (UTC)", jid, schedule_time)
                 all_ids.extend(ids)
         return all_ids
 
