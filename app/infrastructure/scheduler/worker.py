@@ -280,135 +280,143 @@ def run_worker(
                 job = pending[0]
                 if stop_event.is_set():
                     pass  # Will break at end of loop
-                elif job.schedule_time is not None and job.schedule_time > now:
-                    logger.debug(
-                        "Skipping job %s: schedule_time %s is in the future (now=%s)",
-                        job.id, job.schedule_time, now,
-                    )
                 else:
-                    account_data = None
-                    try:
-                        with get_db_session(SessionLocal) as session:
-                            repo = VideoJobRepository(session)
-                            insta_repo = InstagramAccountRepository(session)
-
-                            if not job.instagram_account_id:
-                                err = "No Instagram account configured. Re-create the job."
-                                logger.error(
-                                    "Job %s has no Instagram account. Re-create the job with an account.",
-                                    job.id,
-                                )
-                                job.status = "failed"
-                                job.error_message = err
-                                repo.update(job)
-                                _notify_admin_job_failed(
-                                    job.id, job.original_url, err,
-                                    job.submitted_by_username,
-                                    admin_telegram_chat_id, telegram_bot_token,
-                                )
-                            elif not (account := insta_repo.get_by_id(job.instagram_account_id)):
-                                err = f"Instagram account {job.instagram_account_id} not found"
-                                logger.error("Job %s: Instagram account %s not found", job.id, job.instagram_account_id)
-                                job.status = "failed"
-                                job.error_message = err
-                                repo.update(job)
-                                _notify_admin_job_failed(
-                                    job.id, job.original_url, err,
-                                    job.submitted_by_username,
-                                    admin_telegram_chat_id, telegram_bot_token,
-                                )
-                            elif not gemini_keys:
-                                err = "No Gemini API keys configured"
-                                logger.error("No Gemini API keys configured. Add keys via bot.")
-                                job.status = "failed"
-                                job.error_message = err
-                                repo.update(job)
-                                _notify_admin_job_failed(
-                                    job.id, job.original_url, err,
-                                    job.submitted_by_username,
-                                    admin_telegram_chat_id, telegram_bot_token,
-                                )
-                            else:
-                                account_data = (account[0], account[1], account[2])  # username, password, watermark_path
-
-                        if account_data:
-                            username, password, watermark_path = account_data
-                            instagram_uploader = InstagramUploader(
-                                username=username,
-                                password=password,
-                                session_path=instagram_session_path,
+                    skip_job = False
+                    if job.schedule_time is not None:
+                        st = job.schedule_time
+                        if st.tzinfo is None:
+                            st = st.replace(tzinfo=timezone.utc)
+                        if st > now:
+                            logger.debug(
+                                "Skipping job %s: schedule_time %s is in the future (now=%s)",
+                                job.id, st, now,
                             )
+                            skip_job = True
 
-                            logger.info("Processing job %s: %s", job.id, job.original_url)
-
-                            def _generate_metadata(title: str, tags: list[str]):
-                                return generate_metadata_with_failover(
-                                    gemini_keys,
-                                    title,
-                                    tags,
-                                    model_name=gemini_model,
-                                    db_cache_get=_cache_get,
-                                    db_cache_set=_cache_set,
-                                )
-
-                            completed_job = process_job(
-                                job_id=job.id,
-                                repository=None,
-                                downloader=downloader,
-                                metadata_client=None,
-                                instagram_uploader=instagram_uploader,
-                                generate_metadata_fn=_generate_metadata,
-                                logo_path=watermark_path,
-                                SessionLocal=SessionLocal,
-                            )
-                            logger.info("Job %s completed successfully", job.id)
-                            _notify_admin_job_completed(
-                                completed_job.id,
-                                completed_job.original_url,
-                                completed_job.generated_title,
-                                completed_job.submitted_by_username,
-                                admin_telegram_chat_id,
-                                telegram_bot_token,
-                            )
-                            time.sleep(UPLOAD_DELAY_SECONDS)
-                    except Exception as e:
-                        logger.exception("Job %s failed: %s", job.id, e)
-                        marked = False
+                    if not skip_job:
+                        account_data = None
                         try:
-                            def _mark_failed():
-                                with get_db_session(SessionLocal) as session:
-                                    repo = VideoJobRepository(session)
-                                    failed_job = repo.get_by_id(job.id)
-                                    if failed_job:
-                                        failed_job.status = "failed"
-                                        failed_job.error_message = str(e)[:500]
-                                        repo.update(failed_job)
-                            retry_on_locked(_mark_failed)
-                            marked = True
-                        except Exception as db_err:
-                            logger.exception("Could not update job %s to failed: %s", job.id, db_err)
-                            try:
-                                from sqlalchemy import text
-                                with engine.connect() as conn:
-                                    now_str = datetime.now(timezone.utc).isoformat()
-                                    conn.execute(
-                                        text(
-                                            "UPDATE video_jobs SET status='failed', error_message=:err, updated_at=:now WHERE id=:jid"
-                                        ),
-                                        {"err": str(e)[:500], "jid": job.id, "now": now_str},
+                            with get_db_session(SessionLocal) as session:
+                                repo = VideoJobRepository(session)
+                                insta_repo = InstagramAccountRepository(session)
+
+                                if not job.instagram_account_id:
+                                    err = "No Instagram account configured. Re-create the job."
+                                    logger.error(
+                                        "Job %s has no Instagram account. Re-create the job with an account.",
+                                        job.id,
                                     )
-                                    conn.commit()
+                                    job.status = "failed"
+                                    job.error_message = err
+                                    repo.update(job)
+                                    _notify_admin_job_failed(
+                                        job.id, job.original_url, err,
+                                        job.submitted_by_username,
+                                        admin_telegram_chat_id, telegram_bot_token,
+                                    )
+                                elif not (account := insta_repo.get_by_id(job.instagram_account_id)):
+                                    err = f"Instagram account {job.instagram_account_id} not found"
+                                    logger.error("Job %s: Instagram account %s not found", job.id, job.instagram_account_id)
+                                    job.status = "failed"
+                                    job.error_message = err
+                                    repo.update(job)
+                                    _notify_admin_job_failed(
+                                        job.id, job.original_url, err,
+                                        job.submitted_by_username,
+                                        admin_telegram_chat_id, telegram_bot_token,
+                                    )
+                                elif not gemini_keys:
+                                    err = "No Gemini API keys configured"
+                                    logger.error("No Gemini API keys configured. Add keys via bot.")
+                                    job.status = "failed"
+                                    job.error_message = err
+                                    repo.update(job)
+                                    _notify_admin_job_failed(
+                                        job.id, job.original_url, err,
+                                        job.submitted_by_username,
+                                        admin_telegram_chat_id, telegram_bot_token,
+                                    )
+                                else:
+                                    account_data = (account[0], account[1], account[2])  # username, password, watermark_path
+
+                            if account_data:
+                                username, password, watermark_path = account_data
+                                instagram_uploader = InstagramUploader(
+                                    username=username,
+                                    password=password,
+                                    session_path=instagram_session_path,
+                                )
+
+                                logger.info("Processing job %s: %s", job.id, job.original_url)
+
+                                def _generate_metadata(title: str, tags: list[str]):
+                                    return generate_metadata_with_failover(
+                                        gemini_keys,
+                                        title,
+                                        tags,
+                                        model_name=gemini_model,
+                                        db_cache_get=_cache_get,
+                                        db_cache_set=_cache_set,
+                                    )
+
+                                completed_job = process_job(
+                                    job_id=job.id,
+                                    repository=None,
+                                    downloader=downloader,
+                                    metadata_client=None,
+                                    instagram_uploader=instagram_uploader,
+                                    generate_metadata_fn=_generate_metadata,
+                                    logo_path=watermark_path,
+                                    SessionLocal=SessionLocal,
+                                )
+                                logger.info("Job %s completed successfully", job.id)
+                                _notify_admin_job_completed(
+                                    completed_job.id,
+                                    completed_job.original_url,
+                                    completed_job.generated_title,
+                                    completed_job.submitted_by_username,
+                                    admin_telegram_chat_id,
+                                    telegram_bot_token,
+                                )
+                                time.sleep(UPLOAD_DELAY_SECONDS)
+                        except Exception as e:
+                            logger.exception("Job %s failed: %s", job.id, e)
+                            marked = False
+                            try:
+                                def _mark_failed():
+                                    with get_db_session(SessionLocal) as session:
+                                        repo = VideoJobRepository(session)
+                                        failed_job = repo.get_by_id(job.id)
+                                        if failed_job:
+                                            failed_job.status = "failed"
+                                            failed_job.error_message = str(e)[:500]
+                                            repo.update(failed_job)
+                                retry_on_locked(_mark_failed)
                                 marked = True
-                            except Exception as raw_err:
-                                logger.exception("Raw SQL fallback failed for job %s: %s", job.id, raw_err)
-                        if not marked:
-                            logger.warning("Job %s could not be marked failed - will retry next poll", job.id)
-                            time.sleep(5)
-                        _notify_admin_job_failed(
-                            job.id, job.original_url, str(e),
-                            job.submitted_by_username,
-                            admin_telegram_chat_id, telegram_bot_token,
-                        )
+                            except Exception as db_err:
+                                logger.exception("Could not update job %s to failed: %s", job.id, db_err)
+                                try:
+                                    from sqlalchemy import text
+                                    with engine.connect() as conn:
+                                        now_str = datetime.now(timezone.utc).isoformat()
+                                        conn.execute(
+                                            text(
+                                                "UPDATE video_jobs SET status='failed', error_message=:err, updated_at=:now WHERE id=:jid"
+                                            ),
+                                            {"err": str(e)[:500], "jid": job.id, "now": now_str},
+                                        )
+                                        conn.commit()
+                                    marked = True
+                                except Exception as raw_err:
+                                    logger.exception("Raw SQL fallback failed for job %s: %s", job.id, raw_err)
+                            if not marked:
+                                logger.warning("Job %s could not be marked failed - will retry next poll", job.id)
+                                time.sleep(5)
+                            _notify_admin_job_failed(
+                                job.id, job.original_url, str(e),
+                                job.submitted_by_username,
+                                admin_telegram_chat_id, telegram_bot_token,
+                            )
 
         except Exception as e:
             logger.exception("Worker iteration failed: %s", e)
