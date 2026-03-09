@@ -10,7 +10,7 @@ Run this **before** starting the bot. It exposes your localhost to the internet:
 cloudflared tunnel --url http://localhost:8080
 ```
 
-**Important:** Keep this running. The URL `https://bottom-searches-dna-glasses.trycloudflare.com` must stay active while the bot runs.
+
 
 > If the cloudflared URL changes (e.g. after restart), update `WEBHOOK_PUBLIC_URL` in `.env` and re-run `install.sh` or `start.sh`.
 
