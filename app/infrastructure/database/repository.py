@@ -108,12 +108,12 @@ class VideoJobRepository:
         return _model_to_entity(model)
 
     def get_pending_jobs(self, now: datetime) -> list[VideoJob]:
-        """Get jobs that are pending and ready to process (no schedule or schedule <= now)."""
+        """Get jobs ready to upload: pending/ready_to_upload with schedule_time <= now or None."""
         stmt = (
             select(VideoJobModel)
             .where(
                 and_(
-                    VideoJobModel.status == "pending",
+                    VideoJobModel.status.in_(["pending", "ready_to_upload"]),
                     or_(
                         VideoJobModel.schedule_time.is_(None),
                         VideoJobModel.schedule_time <= now,
@@ -126,11 +126,59 @@ class VideoJobRepository:
         models = result.scalars().all()
         return [_model_to_entity(m) for m in models]
 
-    def get_all_pending_and_scheduled(self) -> list[VideoJob]:
-        """Get all jobs with status pending (for viewing scheduled tasks)."""
+    def get_jobs_for_prep(
+        self,
+        now: datetime,
+        min_schedule_ahead_minutes: int = 5,
+        max_schedule_ahead_hours: int | None = 24,
+    ) -> list[VideoJob]:
+        """Get scheduled jobs that need pre-processing (download, watermark, metadata)."""
+        from datetime import timedelta
+
+        min_cutoff = now + timedelta(minutes=min_schedule_ahead_minutes)
+        conditions = [
+            VideoJobModel.status == "pending",
+            VideoJobModel.schedule_time.isnot(None),
+            VideoJobModel.schedule_time > min_cutoff,
+        ]
+        if max_schedule_ahead_hours is not None:
+            max_cutoff = now + timedelta(hours=max_schedule_ahead_hours)
+            conditions.append(VideoJobModel.schedule_time <= max_cutoff)
         stmt = (
             select(VideoJobModel)
-            .where(VideoJobModel.status == "pending")
+            .where(and_(*conditions))
+            .order_by(VideoJobModel.schedule_time, VideoJobModel.created_at)
+        )
+        result = self.session.execute(stmt)
+        models = result.scalars().all()
+        return [_model_to_entity(m) for m in models]
+
+    def get_failed_jobs(self) -> list[VideoJob]:
+        """Get all jobs with status failed."""
+        stmt = (
+            select(VideoJobModel)
+            .where(VideoJobModel.status == "failed")
+            .order_by(VideoJobModel.updated_at.desc())
+        )
+        result = self.session.execute(stmt)
+        models = result.scalars().all()
+        return [_model_to_entity(m) for m in models]
+
+    def retry_all_failed(self) -> int:
+        """Set all failed jobs to pending. Returns count of retried jobs."""
+        stmt = (
+            update(VideoJobModel)
+            .where(VideoJobModel.status == "failed")
+            .values(status="pending", error_message=None)
+        )
+        result = self.session.execute(stmt)
+        return result.rowcount or 0
+
+    def get_all_pending_and_scheduled(self) -> list[VideoJob]:
+        """Get all jobs with status pending or ready_to_upload (for viewing scheduled tasks)."""
+        stmt = (
+            select(VideoJobModel)
+            .where(VideoJobModel.status.in_(["pending", "ready_to_upload"]))
             .order_by(VideoJobModel.schedule_time, VideoJobModel.created_at)
         )
         result = self.session.execute(stmt)

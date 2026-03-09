@@ -51,6 +51,11 @@ def main() -> None:
             "stop_event": _worker_stop_event,
             "admin_telegram_chat_id": settings.admin_telegram_chat_id,
             "telegram_bot_token": settings.telegram_bot_token,
+            "prep_scheduled_videos": settings.prep_scheduled_videos,
+            "prep_hours_before_schedule": settings.prep_hours_before_schedule,
+            "prep_min_schedule_ahead_minutes": settings.prep_min_schedule_ahead_minutes,
+            "poll_interval_idle_seconds": settings.poll_interval_idle_seconds,
+            "poll_interval_active_seconds": settings.poll_interval_active_seconds,
         },
         daemon=False,
     )
@@ -61,6 +66,12 @@ def main() -> None:
     logger.info("Cookies path: %s", cookies_path)
 
     # Create Telegram bot
+    prep_config = {
+        "video_storage_path": settings.video_storage_path,
+        "cookies_path": str(cookies_path),
+        "yt_proxy": settings.yt_proxy,
+        "gemini_model": settings.gemini_model,
+    }
     app = create_application(
         bot_token=settings.telegram_bot_token,
         admin_chat_id=settings.admin_telegram_chat_id,
@@ -68,6 +79,8 @@ def main() -> None:
         SessionLocal=SessionLocal,
         cookies_path=str(cookies_path),
         worker_pause_event=_worker_pause_event,
+        default_instagram_account_id=settings.default_instagram_account_id,
+        prep_config=prep_config,
     )
 
     def _sigterm_handler(signum, frame):

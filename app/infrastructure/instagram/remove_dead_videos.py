@@ -1,4 +1,4 @@
-"""Remove Instagram Reels with 0 views older than N days."""
+"""Remove Instagram Reels with 0 views (optionally older than N days)."""
 
 import logging
 from datetime import datetime, timedelta, timezone
@@ -11,16 +11,17 @@ logger = logging.getLogger(__name__)
 def remove_dead_videos(
     username: str,
     password: str,
-    min_age_days: int = 1,
+    min_age_days: int | None = None,
     max_reels: int = 100,
 ) -> tuple[int, list[str]]:
     """
-    Find and delete Reels with 0 views that were uploaded more than min_age_days ago.
+    Find and delete Reels with 0 views.
 
     Args:
         username: Instagram username.
         password: Instagram password.
         min_age_days: Minimum age in days before a 0-view reel is considered "dead".
+            If None, delete all 0-view reels (no time limit).
         max_reels: Maximum number of reels to scan (pagination limit).
 
     Returns:
@@ -34,7 +35,6 @@ def remove_dead_videos(
         raise
 
     user_id = client.user_id_from_username(username)
-    cutoff = datetime.now(timezone.utc) - timedelta(days=min_age_days)
     deleted_count = 0
     deleted_codes: list[str] = []
 
@@ -57,8 +57,10 @@ def remove_dead_videos(
             elif taken_at.tzinfo is None:
                 taken_at = taken_at.replace(tzinfo=timezone.utc)
 
-            if taken_at > cutoff:
-                continue
+            if min_age_days is not None:
+                cutoff = datetime.now(timezone.utc) - timedelta(days=min_age_days)
+                if taken_at > cutoff:
+                    continue
             if view_count is not None and view_count != 0:
                 continue
 

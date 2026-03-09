@@ -33,6 +33,18 @@ class Settings(BaseSettings):
     # Optional: HTTP proxy for yt-dlp (e.g. http://user:pass@host:port). Helps with datacenter IP blocks.
     yt_proxy: str | None = None
 
+    # Pre-processing for scheduled videos (download/watermark/metadata ahead of schedule_time)
+    prep_scheduled_videos: bool = True
+    prep_hours_before_schedule: int = 24  # Only prep jobs within this window
+    prep_min_schedule_ahead_minutes: int = 5  # Don't prep if schedule_time is within this many minutes
+
+    # Worker polling
+    poll_interval_idle_seconds: int = 60
+    poll_interval_active_seconds: int = 30
+
+    # Optional default Instagram account (skip picker when only one account or this is set)
+    default_instagram_account_id: int | None = None
+
     # Logging
     log_level: str = "INFO"
 

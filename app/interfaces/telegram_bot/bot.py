@@ -36,6 +36,7 @@ from app.infrastructure.database.repository import (
 )
 from app.infrastructure.database.session import get_db_session, run_db_async
 from app.infrastructure.instagram.remove_dead_videos import remove_dead_videos
+from app.infrastructure.scheduler.immediate_prep import start_immediate_prep
 
 logger = logging.getLogger(__name__)
 
@@ -43,10 +44,42 @@ logger = logging.getLogger(__name__)
 def _parse_schedule_time_bd(text: str) -> datetime | None:
     """
     Parse schedule time in Bangladesh time.
-    Format: month day time am/pm (year = current year).
+    Formats: month day time am/pm, "tomorrow 9am", "in 1 hour", "3/8 2:30pm".
     Examples: "3 8 2:30 pm", "12-25 9:00 am", "3/8 14:30" (24h also ok).
     """
     text = text.strip().lower()
+    now_bd = datetime.now(BANGLADESH_TZ)
+
+    # Preset: "in 1 hour" / "in 2 hours"
+    m_hours = re.match(r"in\s+(\d+)\s*hour", text)
+    if m_hours:
+        from datetime import timedelta
+        hours = int(m_hours.group(1))
+        return (now_bd + timedelta(hours=hours)).astimezone(timezone.utc)
+
+    # Preset: "tomorrow 9am" / "tomorrow 9:30 pm"
+    m_tomorrow = re.match(r"tomorrow\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", text)
+    if m_tomorrow:
+        hour = int(m_tomorrow.group(1))
+        minute = int(m_tomorrow.group(2) or 0)
+        ampm = (m_tomorrow.group(3) or "am").lower()
+        if ampm == "pm" and hour != 12:
+            hour += 12
+        elif ampm == "am" and hour == 12:
+            hour = 0
+        from datetime import timedelta
+        tomorrow = now_bd.date() + timedelta(days=1)
+        try:
+            dt_bd = datetime(tomorrow.year, tomorrow.month, tomorrow.day, hour, minute, 0, tzinfo=BANGLADESH_TZ)
+            return dt_bd.astimezone(timezone.utc)
+        except ValueError:
+            return None
+
+    # Preset: "same time tomorrow"
+    if re.match(r"same\s+time\s+tomorrow", text):
+        from datetime import timedelta
+        tomorrow = now_bd + timedelta(days=1)
+        return tomorrow.astimezone(timezone.utc)
     # Match: month day time (am|pm) - month/day can be separated by space, - or /
     m = re.match(
         r"(\d{1,2})[-/\s]+(\d{1,2})\s+(\d{1,2}):(\d{2})\s*(am|pm)?",
@@ -78,9 +111,14 @@ def _parse_schedule_time_bd(text: str) -> datetime | None:
 
 
 # Conversation states
-UPLOAD_URLS = 0
-SCHEDULE_URLS, SCHEDULE_TIME = 1, 2
-UPLOAD_PICK_ACCOUNT, SCHEDULE_PICK_ACCOUNT = 3, 4
+ADD_VIDEOS_URLS = 0
+ADD_VIDEOS_PICK_ACCOUNT = 1
+ADD_VIDEOS_PICK_MODE = 2
+ADD_VIDEOS_SCHEDULE_TIME = 3
+# Legacy aliases for compatibility
+UPLOAD_URLS = ADD_VIDEOS_URLS
+SCHEDULE_URLS, SCHEDULE_TIME = ADD_VIDEOS_URLS, ADD_VIDEOS_SCHEDULE_TIME
+UPLOAD_PICK_ACCOUNT, SCHEDULE_PICK_ACCOUNT = ADD_VIDEOS_PICK_ACCOUNT, ADD_VIDEOS_PICK_ACCOUNT
 ADD_ADMIN_USERNAME, ADD_ADMIN_PERMISSIONS, REMOVE_ADMIN_USERNAME = 10, 12, 11
 ADD_GEMINI_KEY = 20
 ADD_INSTA_USERNAME, ADD_INSTA_PASSWORD, ADD_INSTA_WATERMARK = 21, 22, 24
@@ -89,9 +127,15 @@ UPDATE_INSTA_WATERMARK = 25
 REMOVE_DEAD_VIDEOS_PICK_ACCOUNT = 26
 
 # Callback data
-CB_UPLOAD = "upload"
-CB_SCHEDULE = "schedule"
+CB_ADD_VIDEOS = "add_videos"
+CB_UPLOAD = "upload"  # Legacy
+CB_SCHEDULE = "schedule"  # Legacy
 CB_VIEW = "view"
+CB_MODE_UPLOAD_NOW = "mode_upload_now"
+CB_MODE_SCHEDULE = "mode_schedule"
+CB_PRESET_1H = "preset_1h"
+CB_PRESET_TOMORROW_9AM = "preset_tomorrow_9am"
+CB_PRESET_SAME_TOMORROW = "preset_same_tomorrow"
 CB_MANAGE_ADMINS = "manage_admins"
 CB_ADD_ADMIN = "add_admin"
 CB_REMOVE_ADMIN = "remove_admin"
@@ -113,6 +157,7 @@ CB_RETRY_JOB_PREFIX = "retry_job_"
 CB_CANCEL_JOB_PREFIX = "cancel_job_"
 CB_CLEAR_ALL_JOBS = "clear_all_jobs"
 CB_CLEAR_ALL_JOBS_CONFIRM = "clear_all_jobs_confirm"
+CB_RETRY_ALL_FAILED = "retry_all_failed"
 CB_BACK = "back"
 CB_PERM_FULL = "perm_full"
 CB_PERM_UPLOAD = "perm_upload"
@@ -184,10 +229,8 @@ def build_main_menu_keyboard(
     """Build the main menu keyboard. Filter by permissions for sub-admins."""
     perms = None if is_main_admin_flag else sub_admin_permissions
     keyboard = []
-    if _user_has_permission(perms, PERM_UPLOAD_VIDEOS):
-        keyboard.append([InlineKeyboardButton("Upload videos", callback_data=CB_UPLOAD)])
-    if _user_has_permission(perms, PERM_SCHEDULE_UPLOADS):
-        keyboard.append([InlineKeyboardButton("Schedule uploads", callback_data=CB_SCHEDULE)])
+    if _user_has_permission(perms, PERM_UPLOAD_VIDEOS) or _user_has_permission(perms, PERM_SCHEDULE_UPLOADS):
+        keyboard.append([InlineKeyboardButton("Add videos", callback_data=CB_ADD_VIDEOS)])
     if _user_has_permission(perms, PERM_VIEW_SCHEDULED_TASKS):
         keyboard.append([InlineKeyboardButton("View scheduled tasks", callback_data=CB_VIEW)])
     if _user_has_permission(perms, PERM_MANAGE_ADMINS):
@@ -275,6 +318,31 @@ def _hour12_to_24(hour12: int, ampm: int) -> int:
         return 0 if hour12 == 12 else hour12
     # PM
     return 12 if hour12 == 12 else hour12 + 12
+
+
+def _build_mode_picker_keyboard() -> InlineKeyboardMarkup:
+    """Build keyboard for Upload now vs Schedule for later."""
+    keyboard = [
+        [InlineKeyboardButton("Upload now", callback_data=CB_MODE_UPLOAD_NOW)],
+        [InlineKeyboardButton("Schedule for later", callback_data=CB_MODE_SCHEDULE)],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def _build_time_picker_with_presets(
+    month: int, day: int, hour12: int, minute: int, ampm: int, year: int
+) -> InlineKeyboardMarkup:
+    """Build time picker with preset buttons at top."""
+    base_kb = _build_time_picker_keyboard(month, day, hour12, minute, ampm, year)
+    # Add preset row at top
+    preset_row = [
+        InlineKeyboardButton("In 1 hour", callback_data=CB_PRESET_1H),
+        InlineKeyboardButton("Tomorrow 9 AM", callback_data=CB_PRESET_TOMORROW_9AM),
+        InlineKeyboardButton("Same time tomorrow", callback_data=CB_PRESET_SAME_TOMORROW),
+    ]
+    # InlineKeyboardMarkup has inline_keyboard - we need to prepend
+    new_keyboard = [preset_row] + list(base_kb.inline_keyboard)
+    return InlineKeyboardMarkup(new_keyboard)
 
 
 def _build_time_picker_keyboard(
@@ -377,13 +445,21 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 with get_db_session(SessionLocal) as session:
                     repo = VideoJobRepository(session)
                     job = repo.get_by_id(job_id)
-                    if job and job.status == "pending":
+                    if job and job.status in ("pending", "ready_to_upload"):
                         job.status = "cancelled"
                         repo.update(job)
-                        return True
-                return False
+                        return job.local_path
+                return None
 
-            cancelled = await run_db_async(_cancel_job)
+            local_path = await run_db_async(_cancel_job)
+            if local_path is not None:
+                import os
+                if local_path and os.path.exists(local_path):
+                    try:
+                        os.remove(local_path)
+                    except OSError:
+                        pass
+            cancelled = local_path is not None
             if cancelled:
                 await query.answer("Job cancelled")
                 await _show_scheduled_tasks(query, context)
@@ -570,22 +646,18 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await _show_sub_admins(query, context)
         return ConversationHandler.END
 
-    if data == CB_UPLOAD:
-        if not _user_has_permission(user_perms, PERM_UPLOAD_VIDEOS):
+    if data == CB_ADD_VIDEOS or data == CB_UPLOAD or data == CB_SCHEDULE:
+        if data == CB_UPLOAD and not _user_has_permission(user_perms, PERM_UPLOAD_VIDEOS):
+            return ConversationHandler.END
+        if data == CB_SCHEDULE and not _user_has_permission(user_perms, PERM_SCHEDULE_UPLOADS):
+            return ConversationHandler.END
+        if data == CB_ADD_VIDEOS and not _user_has_permission(user_perms, PERM_UPLOAD_VIDEOS) and not _user_has_permission(user_perms, PERM_SCHEDULE_UPLOADS):
             return ConversationHandler.END
         await query.edit_message_text(
             "Send me the video URLs (comma or newline separated):"
         )
-        context.user_data["action"] = "upload"
-        return UPLOAD_URLS
-    elif data == CB_SCHEDULE:
-        if not _user_has_permission(user_perms, PERM_SCHEDULE_UPLOADS):
-            return ConversationHandler.END
-        await query.edit_message_text(
-            "Send me the video URLs (comma or newline separated):"
-        )
-        context.user_data["action"] = "schedule"
-        return SCHEDULE_URLS
+        context.user_data["action"] = "upload" if data == CB_UPLOAD else ("schedule" if data == CB_SCHEDULE else None)
+        return ADD_VIDEOS_URLS
     elif data == CB_VIEW:
         if not _user_has_permission(user_perms, PERM_VIEW_SCHEDULED_TASKS):
             return ConversationHandler.END
@@ -722,15 +794,24 @@ def _get_pending_jobs(SessionLocal):
         return repo.get_all_pending_and_scheduled()
 
 
+def _get_failed_jobs_count(SessionLocal) -> int:
+    """Sync helper: count failed jobs."""
+    with get_db_session(SessionLocal) as session:
+        repo = VideoJobRepository(session)
+        return len(repo.get_failed_jobs())
+
+
 async def _show_scheduled_tasks(query, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Show pending/scheduled jobs to the user with Cancel buttons."""
     SessionLocal = context.bot_data["SessionLocal"]
     jobs = await run_db_async(_get_pending_jobs, SessionLocal)
+    failed_count = await run_db_async(_get_failed_jobs_count, SessionLocal)
 
-    back_btn = InlineKeyboardMarkup([[InlineKeyboardButton("← Back", callback_data=CB_BACK)]])
     if not jobs:
         text = "No pending or scheduled tasks. All clear! ✓"
         keyboard = [[InlineKeyboardButton("Clear all jobs", callback_data=CB_CLEAR_ALL_JOBS)]]
+        if failed_count > 0:
+            keyboard.append([InlineKeyboardButton(f"Retry {failed_count} failed", callback_data=CB_RETRY_ALL_FAILED)])
         keyboard.append([InlineKeyboardButton("← Back", callback_data=CB_BACK)])
         reply_markup = InlineKeyboardMarkup(keyboard)
     else:
@@ -743,9 +824,12 @@ async def _show_scheduled_tasks(query, context: ContextTypes.DEFAULT_TYPE) -> No
                 schedule_str = bd.strftime("%b %d, %I:%M %p")
             else:
                 schedule_str = "ASAP"
-            lines.append(f"• [{j.id}] {j.original_url[:50]}... @ {schedule_str}")
+            status_tag = "ready" if j.status == "ready_to_upload" else "pending"
+            lines.append(f"• [{j.id}] {j.original_url[:50]}... @ {schedule_str} ({status_tag})")
             keyboard.append([InlineKeyboardButton(f"Cancel #{j.id}", callback_data=f"{CB_CANCEL_JOB_PREFIX}{j.id}")])
         keyboard.append([InlineKeyboardButton("Clear all jobs", callback_data=CB_CLEAR_ALL_JOBS)])
+        if failed_count > 0:
+            keyboard.append([InlineKeyboardButton(f"Retry {failed_count} failed", callback_data=CB_RETRY_ALL_FAILED)])
         keyboard.append([InlineKeyboardButton("← Back", callback_data=CB_BACK)])
         text = "Scheduled tasks:\n\n" + "\n".join(lines)
         if len(jobs) > 20:
@@ -1145,17 +1229,17 @@ async def remove_dead_videos_account_picked(
         return ConversationHandler.END
 
     username, password, _ = account
-    await query.edit_message_text(f"Scanning @{username} for dead reels...")
+    await query.edit_message_text(f"Scanning @{username} for all 0-view reels...")
 
     try:
-        deleted_count, deleted_codes = remove_dead_videos(username, password, min_age_days=1)
+        deleted_count, deleted_codes = remove_dead_videos(username, password, min_age_days=None)
         if deleted_count == 0:
-            msg = f"No dead reels found for @{username}."
+            msg = f"No 0-view reels found for @{username}."
         else:
             codes_str = ", ".join(deleted_codes[:10])
             if len(deleted_codes) > 10:
                 codes_str += f" ... and {len(deleted_codes) - 10} more"
-            msg = f"Deleted {deleted_count} dead reel(s) from @{username}: {codes_str}"
+            msg = f"Deleted {deleted_count} dead reel(s) (0 views) from @{username}: {codes_str}"
         await query.edit_message_text(msg, reply_markup=menu)
     except Exception as e:
         logger.exception("Remove dead videos failed for @%s: %s", username, e)
@@ -1192,8 +1276,8 @@ async def remove_admin_username_received(update: Update, context: ContextTypes.D
     return ConversationHandler.END
 
 
-async def upload_urls_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle URLs for immediate upload - then show account picker."""
+async def add_videos_urls_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle URLs for Add videos - then show account picker."""
     admin_chat_id = context.bot_data["admin_chat_id"]
     admin_username = context.bot_data["admin_username"]
     sub_admin_usernames = _get_sub_admin_usernames(context)
@@ -1203,7 +1287,7 @@ async def upload_urls_received(update: Update, context: ContextTypes.DEFAULT_TYP
     urls = parse_urls(update.message.text or "")
     if not urls:
         await update.message.reply_text("Hmm, I couldn't find any valid URLs. Try sending video links (YouTube, Instagram, etc.)")
-        return UPLOAD_URLS
+        return ADD_VIDEOS_URLS
 
     context.user_data["urls"] = urls
     SessionLocal = context.bot_data["SessionLocal"]
@@ -1221,35 +1305,116 @@ async def upload_urls_received(update: Update, context: ContextTypes.DEFAULT_TYP
         context.user_data.clear()
         return ConversationHandler.END
 
+    default_acc_id = context.bot_data.get("default_instagram_account_id")
+    if len(accounts) == 1 or (default_acc_id and any(a[0] == default_acc_id for a in accounts)):
+        acc_id = default_acc_id if default_acc_id and any(a[0] == default_acc_id for a in accounts) else accounts[0][0]
+        context.user_data["instagram_account_id"] = acc_id
+        action = context.user_data.get("action")
+        if action == "upload":
+            user = update.effective_user
+            submitted_by = (user.username or f"user_{user.id}") if user else None
+            job_ids = await _create_jobs_sync(context, acc_id, schedule_time=None, submitted_by=submitted_by)
+            menu = await _get_main_menu_for_completion(update, context)
+            await update.message.reply_text(
+                f"Uploading! 🎬 {len(job_ids)} video(s) queued – they'll be going live on Instagram shortly.\n\nJob IDs: {job_ids}",
+                reply_markup=menu,
+            )
+            context.user_data.clear()
+            return ConversationHandler.END
+        if action == "schedule":
+            now_bd = datetime.now(BANGLADESH_TZ)
+            month, day, year = now_bd.month, now_bd.day, now_bd.year
+            hour12, ampm = _hour24_to_12(now_bd.hour if 0 <= now_bd.hour < 24 else 14)
+            minute = (now_bd.minute // 5) * 5 if 0 <= now_bd.minute < 60 else 0
+            await update.message.reply_text(
+                "When should we post? (Bangladesh time)\n\n"
+                "Use presets above or type: month day time am/pm, tomorrow 9am, in 1 hour",
+                reply_markup=_build_time_picker_with_presets(month, day, hour12, minute, ampm, year),
+            )
+            return ADD_VIDEOS_SCHEDULE_TIME
+        await update.message.reply_text(
+            "Upload now or schedule for later?",
+            reply_markup=_build_mode_picker_keyboard(),
+        )
+        return ADD_VIDEOS_PICK_MODE
+
     await update.message.reply_text(
         "Which Instagram account should we use?",
         reply_markup=_build_account_picker_keyboard(accounts),
     )
-    return UPLOAD_PICK_ACCOUNT
+    return ADD_VIDEOS_PICK_ACCOUNT
 
 
-async def upload_account_picked(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle account selection for immediate upload."""
+async def add_videos_account_picked(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle account selection - show mode picker or create jobs / time picker based on action."""
     query = update.callback_query
     await query.answer()
     data = query.data or ""
     if not data.startswith(CB_ACCOUNT_PREFIX):
         return ConversationHandler.END
     acc_id = int(data[len(CB_ACCOUNT_PREFIX) :])
+    context.user_data["instagram_account_id"] = acc_id
+    action = context.user_data.get("action")
+
+    if action == "upload":
+        return await _do_create_upload_jobs(update, context, acc_id)
+    if action == "schedule":
+        return await _show_schedule_time_picker(query, context)
+
+    # action is None (Add videos) - show mode picker
+    await query.edit_message_text(
+        "Upload now or schedule for later?",
+        reply_markup=_build_mode_picker_keyboard(),
+    )
+    return ADD_VIDEOS_PICK_MODE
+
+
+async def add_videos_mode_picked(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle mode selection: Upload now -> create jobs; Schedule -> show time picker."""
+    query = update.callback_query
+    await query.answer()
+    data = query.data or ""
+    acc_id = context.user_data.get("instagram_account_id")
+    if not acc_id:
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    if data == CB_MODE_UPLOAD_NOW:
+        context.user_data["action"] = "upload"
+        return await _do_create_upload_jobs(update, context, acc_id)
+    if data == CB_MODE_SCHEDULE:
+        context.user_data["action"] = "schedule"
+        return await _show_schedule_time_picker(query, context)
+    return ConversationHandler.END
+
+
+async def _create_jobs_sync(
+    context: ContextTypes.DEFAULT_TYPE,
+    acc_id: int,
+    schedule_time: datetime | None,
+    submitted_by: str | None = None,
+) -> list[int]:
+    """Create jobs and return job IDs. Used by both message and callback flows."""
     urls = context.user_data.get("urls", [])
-    user = update.effective_user
-    submitted_by = (user.username or f"user_{user.id}") if user else None
     SessionLocal = context.bot_data["SessionLocal"]
 
-    def _create_upload_jobs():
+    def _create():
         with get_db_session(SessionLocal) as session:
             repo = VideoJobRepository(session)
             return create_job(
-                repo, urls, schedule_time=None, instagram_account_id=acc_id,
+                repo, urls, schedule_time=schedule_time, instagram_account_id=acc_id,
                 submitted_by_username=submitted_by,
             )
 
-    job_ids = await run_db_async(_create_upload_jobs)
+    return await run_db_async(_create)
+
+
+async def _do_create_upload_jobs(update: Update, context: ContextTypes.DEFAULT_TYPE, acc_id: int) -> int:
+    """Create jobs with schedule_time=None and show completion."""
+    query = update.callback_query
+    user = query.from_user if query else update.effective_user
+    submitted_by = (user.username or f"user_{user.id}") if user else None
+    job_ids = await _create_jobs_sync(context, acc_id, schedule_time=None, submitted_by=submitted_by)
     menu = await _get_main_menu_for_completion(update, context)
     await query.edit_message_text(
         f"Uploading! 🎬 {len(job_ids)} video(s) queued – they'll be going live on Instagram shortly.\n\nJob IDs: {job_ids}",
@@ -1259,53 +1424,8 @@ async def upload_account_picked(update: Update, context: ContextTypes.DEFAULT_TY
     return ConversationHandler.END
 
 
-async def schedule_urls_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle URLs for scheduled upload - show account picker."""
-    admin_chat_id = context.bot_data["admin_chat_id"]
-    admin_username = context.bot_data["admin_username"]
-    sub_admin_usernames = _get_sub_admin_usernames(context)
-    if not is_admin(update, admin_chat_id, admin_username, sub_admin_usernames):
-        return ConversationHandler.END
-
-    urls = parse_urls(update.message.text or "")
-    if not urls:
-        await update.message.reply_text("Hmm, I couldn't find any valid URLs. Try sending video links (YouTube, Instagram, etc.)")
-        return SCHEDULE_URLS
-
-    context.user_data["urls"] = urls
-    SessionLocal = context.bot_data["SessionLocal"]
-
-    def _get_accounts():
-        with get_db_session(SessionLocal) as session:
-            repo = InstagramAccountRepository(session)
-            return repo.list_all()
-
-    accounts = await run_db_async(_get_accounts)
-    if not accounts:
-        await update.message.reply_text(
-            "No Instagram accounts set up yet. Add one in Manage credentials (main admin only)."
-        )
-        context.user_data.clear()
-        return ConversationHandler.END
-
-    await update.message.reply_text(
-        "Which Instagram account should we use?",
-        reply_markup=_build_account_picker_keyboard(accounts),
-    )
-    return SCHEDULE_PICK_ACCOUNT
-
-
-async def schedule_account_picked(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle account selection for schedule - then show time picker."""
-    query = update.callback_query
-    await query.answer()
-    data = query.data or ""
-    if not data.startswith(CB_ACCOUNT_PREFIX):
-        return ConversationHandler.END
-    acc_id = int(data[len(CB_ACCOUNT_PREFIX) :])
-    context.user_data["instagram_account_id"] = acc_id
-
-    # Default: today, current time in Bangladesh timezone (12h format)
+async def _show_schedule_time_picker(query, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Show time picker with presets."""
     now_bd = datetime.now(BANGLADESH_TZ)
     month, day, year = now_bd.month, now_bd.day, now_bd.year
     hour12, ampm = _hour24_to_12(now_bd.hour if 0 <= now_bd.hour < 24 else 14)
@@ -1313,11 +1433,10 @@ async def schedule_account_picked(update: Update, context: ContextTypes.DEFAULT_
 
     await query.edit_message_text(
         "When should we post? (Bangladesh time)\n\n"
-        "Use the picker below or type: month day time am/pm\n"
-        "e.g. 3 8 2:30 pm",
-        reply_markup=_build_time_picker_keyboard(month, day, hour12, minute, ampm, year),
+        "Use presets above or type: month day time am/pm, tomorrow 9am, in 1 hour",
+        reply_markup=_build_time_picker_with_presets(month, day, hour12, minute, ampm, year),
     )
-    return SCHEDULE_TIME
+    return ADD_VIDEOS_SCHEDULE_TIME
 
 
 def _parse_time_picker_callback(data: str) -> tuple[str, int, int, int, int, int, int] | None:
@@ -1393,10 +1512,25 @@ def _apply_time_picker_action(
     return (month, day, hour12, minute, ampm, year)
 
 
+def _get_schedule_time_for_preset(preset: str) -> datetime | None:
+    """Get schedule_time (UTC) for a preset."""
+    from datetime import timedelta
+    now_bd = datetime.now(BANGLADESH_TZ)
+    if preset == CB_PRESET_1H:
+        return (now_bd + timedelta(hours=1)).astimezone(timezone.utc)
+    if preset == CB_PRESET_TOMORROW_9AM:
+        tomorrow = now_bd.date() + timedelta(days=1)
+        dt_bd = datetime(tomorrow.year, tomorrow.month, tomorrow.day, 9, 0, 0, tzinfo=BANGLADESH_TZ)
+        return dt_bd.astimezone(timezone.utc)
+    if preset == CB_PRESET_SAME_TOMORROW:
+        return (now_bd + timedelta(days=1)).astimezone(timezone.utc)
+    return None
+
+
 async def schedule_time_picker_callback(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> int:
-    """Handle time picker button callbacks (hour/date +/- , confirm, cancel)."""
+    """Handle time picker button callbacks (presets, hour/date +/- , confirm, cancel)."""
     admin_chat_id = context.bot_data["admin_chat_id"]
     admin_username = context.bot_data["admin_username"]
     sub_admin_usernames = _get_sub_admin_usernames(context)
@@ -1404,16 +1538,50 @@ async def schedule_time_picker_callback(
         return ConversationHandler.END
 
     query = update.callback_query
-    parsed = _parse_time_picker_callback(query.data or "")
+    data = query.data or ""
+
+    # Handle presets
+    if data in (CB_PRESET_1H, CB_PRESET_TOMORROW_9AM, CB_PRESET_SAME_TOMORROW):
+        await query.answer()
+        schedule_time = _get_schedule_time_for_preset(data)
+        if schedule_time:
+            urls = context.user_data.get("urls", [])
+            instagram_account_id = context.user_data.get("instagram_account_id")
+            user = query.from_user
+            submitted_by = (user.username or f"user_{user.id}") if user else None
+            SessionLocal = context.bot_data["SessionLocal"]
+
+            def _create_scheduled_jobs():
+                with get_db_session(SessionLocal) as session:
+                    repo = VideoJobRepository(session)
+                    return create_job(
+                        repo, urls, schedule_time=schedule_time, instagram_account_id=instagram_account_id,
+                        submitted_by_username=submitted_by,
+                    )
+
+            job_ids = await run_db_async(_create_scheduled_jobs)
+            start_immediate_prep(job_ids, context.bot_data)
+            menu = await _get_main_menu_for_completion(update, context)
+            dt_bd = schedule_time.astimezone(BANGLADESH_TZ)
+            await query.edit_message_text(
+                f"Done! 📅 {len(job_ids)} video(s) scheduled for "
+                f"{dt_bd.strftime('%b %d, %Y %I:%M %p')} (BD time).\n\n"
+                f"Processing videos now (download, watermark, metadata) – they'll be ready when the time comes.\n\nJob IDs: {job_ids}",
+                reply_markup=menu,
+            )
+            context.user_data.clear()
+            return ConversationHandler.END
+
+    parsed = _parse_time_picker_callback(data)
     if not parsed:
         await query.answer()
-        return SCHEDULE_TIME
+        return ADD_VIDEOS_SCHEDULE_TIME
 
     action, month, day, hour12, minute, ampm, year = parsed
 
     if action == "noop":
         await query.answer()
-        return SCHEDULE_TIME
+        return ADD_VIDEOS_SCHEDULE_TIME
 
     if action == "cancel":
         await query.answer()
@@ -1448,10 +1616,12 @@ async def schedule_time_picker_callback(
                 )
 
         job_ids = await run_db_async(_create_scheduled_jobs)
+        start_immediate_prep(job_ids, context.bot_data)
         menu = await _get_main_menu_for_completion(update, context)
         await query.edit_message_text(
             f"Done! 📅 {len(job_ids)} video(s) scheduled for "
-            f"{dt_bd.strftime('%b %d, %Y %I:%M %p')} (BD time). They'll post automatically!\n\nJob IDs: {job_ids}",
+            f"{dt_bd.strftime('%b %d, %Y %I:%M %p')} (BD time).\n\n"
+            f"Processing videos now (download, watermark, metadata) – they'll be ready when the time comes.\n\nJob IDs: {job_ids}",
             reply_markup=menu,
         )
         context.user_data.clear()
@@ -1463,9 +1633,9 @@ async def schedule_time_picker_callback(
     )
     await query.answer()
     await query.edit_message_reply_markup(
-        reply_markup=_build_time_picker_keyboard(new_mo, new_dd, new_h12, new_m, new_ap, new_yr),
+        reply_markup=_build_time_picker_with_presets(new_mo, new_dd, new_h12, new_m, new_ap, new_yr),
     )
-    return SCHEDULE_TIME
+    return ADD_VIDEOS_SCHEDULE_TIME
 
 
 async def schedule_time_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1489,7 +1659,7 @@ async def schedule_time_received(update: Update, context: ContextTypes.DEFAULT_T
                 "Oops! Use this format: month day time am/pm\n"
                 "e.g. 3 8 2:30 pm or 12-25 9:00 am"
             )
-            return SCHEDULE_TIME
+            return ADD_VIDEOS_SCHEDULE_TIME
 
     urls = context.user_data.get("urls", [])
     instagram_account_id = context.user_data.get("instagram_account_id")
@@ -1506,10 +1676,12 @@ async def schedule_time_received(update: Update, context: ContextTypes.DEFAULT_T
             )
 
     job_ids = await run_db_async(_create_scheduled_jobs)
+    start_immediate_prep(job_ids, context.bot_data)
     bd_time = schedule_time.astimezone(BANGLADESH_TZ)
     menu = await _get_main_menu_for_completion(update, context)
     await update.message.reply_text(
-        f"Done! 📅 {len(job_ids)} video(s) scheduled for {bd_time.strftime('%b %d, %Y %I:%M %p')} (BD time). They'll post automatically!\n\nJob IDs: {job_ids}",
+        f"Done! 📅 {len(job_ids)} video(s) scheduled for {bd_time.strftime('%b %d, %Y %I:%M %p')} (BD time).\n\n"
+        f"Processing videos now (download, watermark, metadata) – they'll be ready when the time comes.\n\nJob IDs: {job_ids}",
         reply_markup=menu,
     )
     context.user_data.clear()
@@ -1617,13 +1789,21 @@ async def cancel_job_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             with get_db_session(SessionLocal) as session:
                 repo = VideoJobRepository(session)
                 job = repo.get_by_id(job_id)
-                if job and job.status == "pending":
+                if job and job.status in ("pending", "ready_to_upload"):
                     job.status = "cancelled"
                     repo.update(job)
-                    return True
-            return False
+                    return job.local_path
+            return None
 
-        cancelled = await run_db_async(_cancel_job)
+        local_path = await run_db_async(_cancel_job)
+        if local_path is not None:
+            import os
+            if local_path and os.path.exists(local_path):
+                try:
+                    os.remove(local_path)
+                except OSError:
+                    pass
+        cancelled = local_path is not None
         if cancelled:
             await query.answer("Job cancelled")
             await _show_scheduled_tasks(query, context)
@@ -1632,6 +1812,29 @@ async def cancel_job_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     except (ValueError, Exception) as e:
         logger.exception("Cancel job failed: %s", e)
         await query.answer("Could not cancel job", show_alert=True)
+
+
+async def retry_all_failed_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle Retry all failed button - requeue all failed jobs."""
+    query = update.callback_query
+    if not query or not query.data:
+        return
+    admin_chat_id = context.bot_data.get("admin_chat_id")
+    admin_username = context.bot_data.get("admin_username")
+    sub_admin_usernames = _get_sub_admin_usernames(context)
+    if not is_admin(update, admin_chat_id, admin_username, sub_admin_usernames):
+        await query.answer()
+        return
+    SessionLocal = context.bot_data["SessionLocal"]
+
+    def _retry_all():
+        with get_db_session(SessionLocal) as session:
+            repo = VideoJobRepository(session)
+            return repo.retry_all_failed()
+
+    count = await run_db_async(_retry_all)
+    await query.answer(f"Retried {count} job(s)")
+    await _show_scheduled_tasks(query, context)
 
 
 async def retry_job_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1706,6 +1909,8 @@ def create_application(
     SessionLocal,
     cookies_path: str = "",
     worker_pause_event=None,
+    default_instagram_account_id: int | None = None,
+    prep_config: dict | None = None,
 ) -> Application:
     """Create and configure the Telegram bot application."""
     app = (
@@ -1718,28 +1923,26 @@ def create_application(
     app.bot_data["SessionLocal"] = SessionLocal
     app.bot_data["cookies_path"] = cookies_path
     app.bot_data["worker_pause_event"] = worker_pause_event
+    app.bot_data["default_instagram_account_id"] = default_instagram_account_id
+    app.bot_data["prep_config"] = prep_config or {}
 
-    # Conversation handler for upload, schedule, admin and credential management flows
+    # Conversation handler for Add videos, admin and credential management flows
+    preset_pattern = f"^({CB_PRESET_1H}|{CB_PRESET_TOMORROW_9AM}|{CB_PRESET_SAME_TOMORROW})$"
     conv_handler = ConversationHandler(
         entry_points=[CallbackQueryHandler(callback_handler)],
         states={
-            UPLOAD_URLS: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, upload_urls_received),
+            ADD_VIDEOS_URLS: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_videos_urls_received),
             ],
-            UPLOAD_PICK_ACCOUNT: [
-                CallbackQueryHandler(upload_account_picked),
+            ADD_VIDEOS_PICK_ACCOUNT: [
+                CallbackQueryHandler(add_videos_account_picked, pattern=f"^{CB_ACCOUNT_PREFIX}"),
             ],
-            SCHEDULE_URLS: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, schedule_urls_received),
+            ADD_VIDEOS_PICK_MODE: [
+                CallbackQueryHandler(add_videos_mode_picked, pattern=f"^({CB_MODE_UPLOAD_NOW}|{CB_MODE_SCHEDULE})$"),
             ],
-            SCHEDULE_PICK_ACCOUNT: [
-                CallbackQueryHandler(schedule_account_picked),
-            ],
-            SCHEDULE_TIME: [
-                CallbackQueryHandler(
-                    schedule_time_picker_callback,
-                    pattern=f"^{CB_TP_PREFIX}",
-                ),
+            ADD_VIDEOS_SCHEDULE_TIME: [
+                CallbackQueryHandler(schedule_time_picker_callback, pattern=f"^{CB_TP_PREFIX}"),
+                CallbackQueryHandler(schedule_time_picker_callback, pattern=preset_pattern),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, schedule_time_received),
             ],
             ADD_ADMIN_USERNAME: [
@@ -1797,6 +2000,11 @@ def create_application(
     )
     app.add_handler(
         CallbackQueryHandler(retry_job_callback, pattern=f"^{CB_RETRY_JOB_PREFIX}"),
+        group=0,
+    )
+    app.add_handler(
+        CallbackQueryHandler(retry_all_failed_callback, pattern=f"^{CB_RETRY_ALL_FAILED}$"),
+        group=0,
         group=0,
     )
     app.add_handler(conv_handler)

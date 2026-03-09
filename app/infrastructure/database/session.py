@@ -72,6 +72,16 @@ def init_db(engine) -> None:
             conn.execute(text("UPDATE sub_admins SET permissions = :perms"), {"perms": all_perms})
             conn.commit()
 
+        # Index for worker queries: get_pending_jobs, get_jobs_for_prep
+        try:
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_video_jobs_status_schedule "
+                "ON video_jobs(status, schedule_time)"
+            ))
+            conn.commit()
+        except Exception:
+            pass
+
 
 @contextmanager
 def get_db_session(SessionLocal: sessionmaker) -> Generator[Session, None, None]:

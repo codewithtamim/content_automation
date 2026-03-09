@@ -40,6 +40,16 @@ def _update_job_status(SessionLocal, job_id: int, **kwargs) -> VideoJob:
     return retry_on_locked(_do_update)
 
 
+def _is_ready_to_upload(job: VideoJob) -> bool:
+    """Check if job has been pre-processed and only needs upload."""
+    return (
+        job.status == "ready_to_upload"
+        and job.local_path is not None
+        and os.path.exists(job.local_path)
+        and job.generated_title is not None
+    )
+
+
 def process_job(
     job_id: int,
     repository: Optional[VideoJobRepository],
@@ -86,8 +96,10 @@ def process_job(
 
     if not job:
         raise ValueError(f"Job {job_id} not found")
-    if job.status != "pending":
-        raise ValueError(f"Job {job_id} is not pending (status: {job.status})")
+    if job.status not in ("pending", "ready_to_upload"):
+        raise ValueError(f"Job {job_id} is not pending or ready_to_upload (status: {job.status})")
+
+    upload_only = _is_ready_to_upload(job)
 
     def _update(**kwargs):
         if use_short_sessions:
@@ -97,41 +109,44 @@ def process_job(
         repository.update(job)
         return job
 
-    local_path: Optional[str] = None
+    local_path: Optional[str] = job.local_path if upload_only else None
     try:
-        # 1. Download (status update in short tx, then download without holding session)
-        _update(status="downloading")
-        local_path, original_title, original_tags = downloader.download(job.original_url, job_id)
-        _update(
-            local_path=local_path, original_title=original_title,
-            original_tags=original_tags or [],
-        )
-        job.local_path = local_path
-        job.original_title = original_title
-        job.original_tags = original_tags or []
-
-        # 2. Watermark
-        if logo_path and os.path.exists(logo_path):
-            _update(status="watermarking")
-            add_watermark(local_path, logo_path)
-            logger.info("Watermark applied to job %s", job_id)
-        else:
-            logger.warning("Logo not found at %s, skipping watermark", logo_path)
-
-        # 3. Generate metadata
-        _update(status="metadata_generating")
-        if generate_metadata_fn:
-            metadata = generate_metadata_fn(original_title or "", original_tags or [])
-        elif metadata_client:
-            metadata = metadata_client.generate_metadata(
-                title=original_title or "",
-                tags=original_tags or [],
+        if not upload_only:
+            # 1. Download (status update in short tx, then download without holding session)
+            _update(status="downloading")
+            local_path, original_title, original_tags = downloader.download(job.original_url, job_id)
+            _update(
+                local_path=local_path, original_title=original_title,
+                original_tags=original_tags or [],
             )
+            job.local_path = local_path
+            job.original_title = original_title
+            job.original_tags = original_tags or []
+
+            # 2. Watermark
+            if logo_path and os.path.exists(logo_path):
+                _update(status="watermarking")
+                add_watermark(local_path, logo_path)
+                logger.info("Watermark applied to job %s", job_id)
+            else:
+                logger.warning("Logo not found at %s, skipping watermark", logo_path)
+
+            # 3. Generate metadata
+            _update(status="metadata_generating")
+            if generate_metadata_fn:
+                metadata = generate_metadata_fn(original_title or "", original_tags or [])
+            elif metadata_client:
+                metadata = metadata_client.generate_metadata(
+                    title=original_title or "",
+                    tags=original_tags or [],
+                )
+            else:
+                raise ValueError("Either generate_metadata_fn or metadata_client must be provided")
+            _update(generated_title=metadata["title"], generated_tags=metadata["tags"])
+            job.generated_title = metadata["title"]
+            job.generated_tags = metadata["tags"]
         else:
-            raise ValueError("Either generate_metadata_fn or metadata_client must be provided")
-        _update(generated_title=metadata["title"], generated_tags=metadata["tags"])
-        job.generated_title = metadata["title"]
-        job.generated_tags = metadata["tags"]
+            local_path = job.local_path
 
         # 4. Upload
         _update(status="uploading")

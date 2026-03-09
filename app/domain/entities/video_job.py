@@ -16,7 +16,9 @@ class VideoJob:
     status: Literal[
         "pending",
         "downloading",
+        "watermarking",
         "metadata_generating",
+        "ready_to_upload",
         "uploading",
         "completed",
         "failed",

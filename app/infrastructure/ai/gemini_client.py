@@ -1,10 +1,23 @@
 """Gemini AI client for metadata generation."""
 
+import hashlib
 import json
 import re
+from collections import OrderedDict
 
 from google import genai
 from pydantic import BaseModel
+
+# In-memory cache for metadata by (title, tags) - avoids duplicate Gemini calls
+_METADATA_CACHE: OrderedDict = OrderedDict()
+_METADATA_CACHE_MAX = 200
+
+
+def _cache_key(title: str, tags: list[str]) -> str:
+    """Create cache key from title and tags."""
+    tags_str = ",".join(sorted(str(t) for t in (tags or [])))
+    raw = f"{title or ''}|{tags_str}"
+    return hashlib.sha256(raw.encode()).hexdigest()
 
 
 class GeneratedMetadata(BaseModel):
@@ -92,13 +105,24 @@ def generate_metadata_with_failover(
 ) -> dict:
     """
     Try each API key in order until one succeeds.
+    Uses in-memory cache to avoid duplicate Gemini calls for same (title, tags).
     Raises RuntimeError if all keys fail.
     """
+    key = _cache_key(title, tags)
+    if key in _METADATA_CACHE:
+        _METADATA_CACHE.move_to_end(key)
+        return _METADATA_CACHE[key]
+
     errors = []
-    for key in api_keys:
+    for api_key in api_keys:
         try:
-            client = GeminiMetadataClient(api_key=key, model_name=model_name)
-            return client.generate_metadata(title, tags)
+            client = GeminiMetadataClient(api_key=api_key, model_name=model_name)
+            result = client.generate_metadata(title, tags)
+            if len(_METADATA_CACHE) >= _METADATA_CACHE_MAX:
+                _METADATA_CACHE.popitem(last=False)
+            _METADATA_CACHE[key] = result
+            _METADATA_CACHE.move_to_end(key)
+            return result
         except Exception as e:
             errors.append(str(e))
             continue
