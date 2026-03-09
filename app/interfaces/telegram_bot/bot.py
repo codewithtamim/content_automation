@@ -2010,7 +2010,6 @@ def create_application(
     app.add_handler(
         CallbackQueryHandler(retry_all_failed_callback, pattern=f"^{CB_RETRY_ALL_FAILED}$"),
         group=0,
-        group=0,
     )
     app.add_handler(conv_handler)
     app.add_handler(CommandHandler("start", start_command))
