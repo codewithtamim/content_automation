@@ -21,7 +21,7 @@ from telegram.ext import (
     filters,
 )
 
-from app.application.use_cases.create_job import create_job, parse_urls
+from app.application.use_cases.create_job import create_job, parse_urls_with_schedule
 from app.infrastructure.database.repository import (
     ALL_PERMISSIONS,
     PERM_MANAGE_ADMINS,
@@ -106,6 +106,22 @@ def _parse_schedule_time_bd(text: str) -> datetime | None:
     try:
         dt_bd = datetime(year, month, day, hour, minute, 0, tzinfo=BANGLADESH_TZ)
         return dt_bd.astimezone(timezone.utc)
+    except ValueError:
+        return None
+
+
+def _parse_schedule_time(text: str) -> datetime | None:
+    """Parse schedule time: try BD formats first, then ISO (YYYY-MM-DD HH:MM)."""
+    text = (text or "").strip()
+    if not text:
+        return None
+    result = _parse_schedule_time_bd(text)
+    if result:
+        return result
+    try:
+        if len(text) == 16:  # 2025-03-08 14:00
+            return datetime.strptime(text, "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+        return datetime.strptime(text, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
     except ValueError:
         return None
 
@@ -654,7 +670,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         if data == CB_ADD_VIDEOS and not _user_has_permission(user_perms, PERM_UPLOAD_VIDEOS) and not _user_has_permission(user_perms, PERM_SCHEDULE_UPLOADS):
             return ConversationHandler.END
         await query.edit_message_text(
-            "Send me the video URLs (comma or newline separated):"
+            "Send me the video URLs (comma or newline separated).\n\n"
+            "Optional: add schedule per link: link | schedule time\n"
+            "Example: https://youtube.com/watch?v=xxx | tomorrow 9am"
         )
         context.user_data["action"] = "upload" if data == CB_UPLOAD else ("schedule" if data == CB_SCHEDULE else None)
         return ADD_VIDEOS_URLS
@@ -1289,12 +1307,25 @@ async def add_videos_urls_received(update: Update, context: ContextTypes.DEFAULT
     if not is_admin(update, admin_chat_id, admin_username, sub_admin_usernames):
         return ConversationHandler.END
 
-    urls = parse_urls(update.message.text or "")
-    if not urls:
+    parsed = parse_urls_with_schedule(update.message.text or "")
+    if not parsed:
         await update.message.reply_text("Hmm, I couldn't find any valid URLs. Try sending video links (YouTube, Instagram, etc.)")
         return ADD_VIDEOS_URLS
 
+    # Build (url, schedule_time) pairs; parse failures -> None (upload now)
+    url_schedule_pairs: list[tuple[str, datetime | None]] = []
+    for url, schedule_str in parsed:
+        if schedule_str:
+            dt = _parse_schedule_time(schedule_str)
+            url_schedule_pairs.append((url, dt))
+        else:
+            url_schedule_pairs.append((url, None))
+
+    urls = [u for u, _ in url_schedule_pairs]
     context.user_data["urls"] = urls
+    context.user_data["url_schedule_pairs"] = url_schedule_pairs
+    has_any_schedule = any(st is not None for _, st in url_schedule_pairs)
+
     SessionLocal = context.bot_data["SessionLocal"]
 
     def _get_accounts():
@@ -1315,6 +1346,26 @@ async def add_videos_urls_received(update: Update, context: ContextTypes.DEFAULT
         acc_id = default_acc_id if default_acc_id and any(a[0] == default_acc_id for a in accounts) else accounts[0][0]
         context.user_data["instagram_account_id"] = acc_id
         action = context.user_data.get("action")
+
+        # Inline schedule format: skip mode picker, create jobs per schedule
+        if has_any_schedule:
+            user = update.effective_user
+            submitted_by = (user.username or f"user_{user.id}") if user else None
+            job_ids = await _create_jobs_with_schedules(context, acc_id, submitted_by=submitted_by)
+            if job_ids:
+                menu = await _get_main_menu_for_completion(update, context)
+                scheduled_count = sum(1 for _, st in url_schedule_pairs if st is not None)
+                immediate_count = len(url_schedule_pairs) - scheduled_count
+                parts = []
+                if scheduled_count:
+                    parts.append(f"{scheduled_count} scheduled")
+                if immediate_count:
+                    parts.append(f"{immediate_count} uploading now")
+                msg = f"Done! {' + '.join(parts)}.\n\nJob IDs: {job_ids}"
+                await update.message.reply_text(msg, reply_markup=menu)
+            context.user_data.clear()
+            return ConversationHandler.END
+
         if action == "upload":
             user = update.effective_user
             submitted_by = (user.username or f"user_{user.id}") if user else None
@@ -1360,6 +1411,27 @@ async def add_videos_account_picked(update: Update, context: ContextTypes.DEFAUL
     acc_id = int(data[len(CB_ACCOUNT_PREFIX) :])
     context.user_data["instagram_account_id"] = acc_id
     action = context.user_data.get("action")
+
+    # Inline schedule format: create jobs per schedule, skip mode picker
+    url_schedule_pairs = context.user_data.get("url_schedule_pairs", [])
+    has_any_schedule = any(st is not None for _, st in url_schedule_pairs)
+    if has_any_schedule:
+        user = query.from_user
+        submitted_by = (user.username or f"user_{user.id}") if user else None
+        job_ids = await _create_jobs_with_schedules(context, acc_id, submitted_by=submitted_by)
+        if job_ids:
+            menu = await _get_main_menu_for_completion(update, context)
+            scheduled_count = sum(1 for _, st in url_schedule_pairs if st is not None)
+            immediate_count = len(url_schedule_pairs) - scheduled_count
+            parts = []
+            if scheduled_count:
+                parts.append(f"{scheduled_count} scheduled")
+            if immediate_count:
+                parts.append(f"{immediate_count} uploading now")
+            msg = f"Done! {' + '.join(parts)}.\n\nJob IDs: {job_ids}"
+            await query.edit_message_text(msg, reply_markup=menu)
+        context.user_data.clear()
+        return ConversationHandler.END
 
     if action == "upload":
         return await _do_create_upload_jobs(update, context, acc_id)
@@ -1412,6 +1484,35 @@ async def _create_jobs_sync(
             )
 
     return await run_db_async(_create)
+
+
+async def _create_jobs_with_schedules(
+    context: ContextTypes.DEFAULT_TYPE,
+    acc_id: int,
+    submitted_by: str | None = None,
+) -> list[int]:
+    """Create jobs from url_schedule_pairs (per-link schedule times). Returns all job IDs."""
+    pairs = context.user_data.get("url_schedule_pairs", [])
+    if not pairs:
+        return []
+    SessionLocal = context.bot_data["SessionLocal"]
+
+    def _create_all():
+        all_ids: list[int] = []
+        with get_db_session(SessionLocal) as session:
+            repo = VideoJobRepository(session)
+            for url, schedule_time in pairs:
+                ids = create_job(
+                    repo, [url], schedule_time=schedule_time, instagram_account_id=acc_id,
+                    submitted_by_username=submitted_by,
+                )
+                all_ids.extend(ids)
+        return all_ids
+
+    job_ids = await run_db_async(_create_all)
+    if job_ids:
+        start_immediate_prep(job_ids, context.bot_data)
+    return job_ids
 
 
 async def _do_create_upload_jobs(update: Update, context: ContextTypes.DEFAULT_TYPE, acc_id: int) -> int:

@@ -24,6 +24,29 @@ def parse_urls(text: str) -> list[str]:
     return urls
 
 
+def parse_urls_with_schedule(text: str) -> list[tuple[str, str | None]]:
+    """
+    Parse URLs with optional per-link schedule time.
+    Format: link | schedule time (one per line, or comma-separated).
+    Returns list of (url, schedule_str_or_none). schedule_str is raw text after | for caller to parse.
+    """
+    result: list[tuple[str, str | None]] = []
+    for part in re.split(r"[\n,]+", text.strip()):
+        part = part.strip()
+        if not part:
+            continue
+        if "|" in part:
+            url_part, _, schedule_part = part.partition("|")
+            url_part = url_part.strip()
+            schedule_part = schedule_part.strip() or None
+            if url_part and URL_PATTERN.match(url_part):
+                result.append((url_part, schedule_part))
+        else:
+            if URL_PATTERN.match(part):
+                result.append((part, None))
+    return result
+
+
 def create_job(
     repository: VideoJobRepository,
     urls: list[str],
