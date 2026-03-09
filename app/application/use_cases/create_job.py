@@ -31,6 +31,7 @@ def create_job(
     schedule_time: Optional[datetime] = None,
     instagram_account_id: Optional[int] = None,
     submitted_by_username: Optional[str] = None,
+    skip_duplicate_urls: bool = True,
 ) -> list[int]:
     """
     Create video jobs for each URL.
@@ -41,6 +42,7 @@ def create_job(
         platform: Target platform (instagram).
         schedule_time: Optional scheduled upload time.
         instagram_account_id: Instagram account to use for upload.
+        skip_duplicate_urls: If True, skip URLs that were already uploaded (completed).
 
     Returns:
         List of created job IDs.
@@ -48,6 +50,8 @@ def create_job(
     now = datetime.now()
     job_ids = []
     for url in urls:
+        if skip_duplicate_urls and repository.exists_completed_url(url):
+            continue
         job = VideoJob(
             id=None,
             original_url=url,

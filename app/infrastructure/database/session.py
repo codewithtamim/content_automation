@@ -82,6 +82,16 @@ def init_db(engine) -> None:
         except Exception:
             pass
 
+        # Index for duplicate URL detection
+        try:
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_video_jobs_original_url_status "
+                "ON video_jobs(original_url, status)"
+            ))
+            conn.commit()
+        except Exception:
+            pass
+
 
 @contextmanager
 def get_db_session(SessionLocal: sessionmaker) -> Generator[Session, None, None]:

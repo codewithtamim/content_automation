@@ -2,6 +2,7 @@
 
 import logging
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from instagrapi import Client
 
@@ -13,6 +14,7 @@ def remove_dead_videos(
     password: str,
     min_age_days: int | None = None,
     max_reels: int = 100,
+    session_path: str | Path | None = None,
 ) -> tuple[int, list[str]]:
     """
     Find and delete Reels with 0 views.
@@ -28,8 +30,22 @@ def remove_dead_videos(
         (deleted_count, list of deleted media codes/URLs).
     """
     client = Client()
+    session_file = None
+    if session_path:
+        p = Path(session_path)
+        p.mkdir(parents=True, exist_ok=True)
+        session_file = p / f"instagram_{username}.json"
+        try:
+            client.load_settings(session_file)
+        except Exception as e:
+            logger.debug("Could not load session for %s: %s", username, e)
     try:
         client.login(username, password)
+        if session_file:
+            try:
+                client.dump_settings(session_file)
+            except Exception as e:
+                logger.debug("Could not save session for %s: %s", username, e)
     except Exception as e:
         logger.exception("Instagram login failed for %s: %s", username, e)
         raise

@@ -56,6 +56,11 @@ def main() -> None:
             "prep_min_schedule_ahead_minutes": settings.prep_min_schedule_ahead_minutes,
             "poll_interval_idle_seconds": settings.poll_interval_idle_seconds,
             "poll_interval_active_seconds": settings.poll_interval_active_seconds,
+            "gemini_metadata_batch_size": settings.gemini_metadata_batch_size,
+            "instagram_session_path": settings.instagram_session_path,
+            "use_metadata_db_cache": settings.use_metadata_db_cache,
+            "yt_max_resolution": settings.yt_max_resolution,
+            "db_vacuum_idle_iterations": settings.db_vacuum_idle_iterations,
         },
         daemon=False,
     )
@@ -71,6 +76,9 @@ def main() -> None:
         "cookies_path": str(cookies_path),
         "yt_proxy": settings.yt_proxy,
         "gemini_model": settings.gemini_model,
+        "instagram_session_path": settings.instagram_session_path,
+        "use_metadata_db_cache": settings.use_metadata_db_cache,
+        "yt_max_resolution": settings.yt_max_resolution,
     }
     app = create_application(
         bot_token=settings.telegram_bot_token,

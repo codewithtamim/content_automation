@@ -10,6 +10,7 @@ from app.infrastructure.config_paths import get_cookies_path
 from app.infrastructure.database.repository import (
     GeminiKeyRepository,
     InstagramAccountRepository,
+    MetadataCacheRepository,
     VideoJobRepository,
 )
 from app.infrastructure.database.session import get_db_session, retry_on_locked
@@ -56,6 +57,8 @@ def _run_immediate_prep_sync(
     gemini_model: str,
     admin_chat_id: str | None,
     telegram_bot_token: str | None,
+    use_metadata_db_cache: bool = True,
+    yt_max_resolution: int | None = None,
 ) -> None:
     """
     Run prep (download, watermark, metadata) for scheduled jobs in a background thread.
@@ -64,10 +67,24 @@ def _run_immediate_prep_sync(
     if not job_ids:
         return
     cookies_path_resolved = str(get_cookies_path(cookies_path))
+
+    def _db_cache_get(key: str):
+        with get_db_session(SessionLocal) as session:
+            repo = MetadataCacheRepository(session)
+            return repo.get(key)
+
+    def _db_cache_set(key: str, title: str, tags: list[str]):
+        with get_db_session(SessionLocal) as session:
+            repo = MetadataCacheRepository(session)
+            repo.set(key, title, tags)
+
+    _cache_get = _db_cache_get if use_metadata_db_cache else None
+    _cache_set = _db_cache_set if use_metadata_db_cache else None
     downloader = YtDlpDownloader(
         storage_path=video_storage_path,
         cookies_path=cookies_path_resolved,
         proxy=yt_proxy,
+        max_resolution=yt_max_resolution,
     )
     for job_id in job_ids:
         try:
@@ -118,7 +135,12 @@ def _run_immediate_prep_sync(
 
             def _generate_metadata(title: str, tags: list[str]):
                 return generate_metadata_with_failover(
-                    gemini_keys, title, tags, model_name=gemini_model
+                    gemini_keys,
+                    title,
+                    tags,
+                    model_name=gemini_model,
+                    db_cache_get=_cache_get,
+                    db_cache_set=_cache_set,
                 )
 
             prep_job(
@@ -178,6 +200,8 @@ def start_immediate_prep(
             "cookies_path": prep_config["cookies_path"],
             "yt_proxy": prep_config.get("yt_proxy"),
             "gemini_model": prep_config.get("gemini_model", "gemini-2.5-flash"),
+            "use_metadata_db_cache": prep_config.get("use_metadata_db_cache", True),
+            "yt_max_resolution": prep_config.get("yt_max_resolution"),
             "admin_chat_id": bot_data.get("admin_chat_id"),
             "telegram_bot_token": bot_data.get("telegram_bot_token"),
         },

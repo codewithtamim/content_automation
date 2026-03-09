@@ -10,6 +10,7 @@ from app.domain.entities.video_job import VideoJob
 from app.infrastructure.database.models import (
     GeminiKeyModel,
     InstagramAccountModel,
+    MetadataCacheModel,
     SubAdminModel,
     VideoJobModel,
 )
@@ -174,12 +175,43 @@ class VideoJobRepository:
         result = self.session.execute(stmt)
         return result.rowcount or 0
 
-    def get_all_pending_and_scheduled(self) -> list[VideoJob]:
-        """Get all jobs with status pending or ready_to_upload (for viewing scheduled tasks)."""
+    def get_all_pending_and_scheduled(self, limit: int | None = 100) -> list[VideoJob]:
+        """Get jobs with status pending or ready_to_upload (for viewing scheduled tasks).
+        Limited to last N jobs for performance."""
         stmt = (
             select(VideoJobModel)
             .where(VideoJobModel.status.in_(["pending", "ready_to_upload"]))
             .order_by(VideoJobModel.schedule_time, VideoJobModel.created_at)
+        )
+        if limit is not None:
+            stmt = stmt.limit(limit)
+        result = self.session.execute(stmt)
+        models = result.scalars().all()
+        return [_model_to_entity(m) for m in models]
+
+    def exists_completed_url(self, url: str) -> bool:
+        """Check if a URL was already successfully uploaded (status=completed)."""
+        stmt = select(VideoJobModel.id).where(
+            and_(
+                VideoJobModel.original_url == url,
+                VideoJobModel.status == "completed",
+            )
+        ).limit(1)
+        result = self.session.execute(stmt)
+        return result.scalar() is not None
+
+    def get_jobs_with_orphaned_files(self) -> list[VideoJob]:
+        """Get jobs that have local_path set but status is failed, cancelled, or completed.
+        These files should be cleaned up."""
+        stmt = (
+            select(VideoJobModel)
+            .where(
+                and_(
+                    VideoJobModel.local_path.isnot(None),
+                    VideoJobModel.local_path != "",
+                    VideoJobModel.status.in_(["failed", "cancelled", "completed"]),
+                )
+            )
         )
         result = self.session.execute(stmt)
         models = result.scalars().all()
@@ -354,3 +386,30 @@ class InstagramAccountRepository:
         self.session.delete(model)
         self.session.flush()
         return True
+
+
+class MetadataCacheRepository:
+    """Repository for metadata cache (Gemini title/tags) persistence."""
+
+    def __init__(self, session: Session):
+        self.session = session
+
+    def get(self, cache_key: str) -> dict | None:
+        """Get cached metadata by key. Returns None if not found."""
+        model = self.session.get(MetadataCacheModel, cache_key)
+        if not model:
+            return None
+        return {
+            "title": model.title,
+            "tags": list(model.tags) if model.tags else ["viral", "fyp", "trending", "foryou", "viral"],
+        }
+
+    def set(self, cache_key: str, title: str, tags: list[str]) -> None:
+        """Store metadata in cache."""
+        model = MetadataCacheModel(
+            cache_key=cache_key,
+            title=title,
+            tags=tags,
+        )
+        self.session.merge(model)
+        self.session.flush()

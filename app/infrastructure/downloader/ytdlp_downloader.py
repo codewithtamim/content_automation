@@ -72,6 +72,7 @@ class YtDlpDownloader:
         storage_path: str = "/tmp/videos",
         cookies_path: Optional[str] = None,
         proxy: Optional[str] = None,
+        max_resolution: Optional[int] = None,
     ):
         self.storage_path = Path(storage_path)
         self.storage_path.mkdir(parents=True, exist_ok=True)
@@ -81,6 +82,7 @@ class YtDlpDownloader:
         )
 
         self.proxy = proxy.strip() if (proxy and proxy.strip()) else None
+        self.max_resolution = max_resolution
 
     def download(
         self,
@@ -97,6 +99,11 @@ class YtDlpDownloader:
             "noplaylist": True,
             "logger": logger,
         }
+        if self.max_resolution and self.max_resolution > 0:
+            opts["format"] = (
+                f"bestvideo[height<={self.max_resolution}]+bestaudio/"
+                f"bestvideo[height<={self.max_resolution}]/best[height<={self.max_resolution}]/best"
+            )
         js_runtimes = _get_js_runtimes()
         if js_runtimes:
             opts["js_runtimes"] = js_runtimes

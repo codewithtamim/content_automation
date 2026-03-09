@@ -1231,8 +1231,13 @@ async def remove_dead_videos_account_picked(
     username, password, _ = account
     await query.edit_message_text(f"Scanning @{username} for all 0-view reels...")
 
+    prep_config = context.bot_data.get("prep_config") or {}
+    session_path = prep_config.get("instagram_session_path")
+
     try:
-        deleted_count, deleted_codes = remove_dead_videos(username, password, min_age_days=None)
+        deleted_count, deleted_codes = remove_dead_videos(
+            username, password, min_age_days=None, session_path=session_path
+        )
         if deleted_count == 0:
             msg = f"No 0-view reels found for @{username}."
         else:

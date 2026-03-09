@@ -23,8 +23,17 @@ class Settings(BaseSettings):
     # AI model (keys stored in DB, set via bot)
     gemini_model: str = "gemini-2.5-flash"
 
+    # Batch size for Gemini metadata (N jobs = 1 API call). Max 30 recommended.
+    gemini_metadata_batch_size: int = 30
+
+    # Persist metadata cache to DB (survives restarts, saves Gemini cost)
+    use_metadata_db_cache: bool = True
+
     # Storage
     video_storage_path: str = "data/videos"
+
+    # Instagram session persistence (per-account JSON files)
+    instagram_session_path: str = "data/sessions"
 
     # YouTube cookies (optional, for bypassing bot detection)
     # Path to Netscape-format cookies file. Default: cookies.txt in project root
@@ -32,6 +41,9 @@ class Settings(BaseSettings):
 
     # Optional: HTTP proxy for yt-dlp (e.g. http://user:pass@host:port). Helps with datacenter IP blocks.
     yt_proxy: str | None = None
+
+    # Max video resolution for downloads (e.g. 720, 1080). None = best available.
+    yt_max_resolution: int | None = None
 
     # Pre-processing for scheduled videos (download/watermark/metadata ahead of schedule_time)
     prep_scheduled_videos: bool = True
@@ -47,6 +59,9 @@ class Settings(BaseSettings):
 
     # Logging
     log_level: str = "INFO"
+
+    # Run VACUUM during low activity (e.g. when idle for N worker iterations). 0 = disabled.
+    db_vacuum_idle_iterations: int = 0
 
 
 def get_settings() -> Settings:

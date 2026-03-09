@@ -55,12 +55,18 @@ def add_watermark(video_path: str, logo_path: str) -> str:
         str(out_path),
         vcodec="libx264",
         acodec="aac",
+        preset="fast",
         loglevel="error",
     )
 
     try:
         out.overwrite_output().run()
     except ffmpeg.Error as e:
+        if out_path.exists():
+            try:
+                out_path.unlink()
+            except OSError:
+                pass
         logger.error("Watermark failed: %s", e.stderr)
         raise
 

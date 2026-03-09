@@ -92,3 +92,16 @@ class InstagramAccountModel(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
+
+
+class MetadataCacheModel(Base):
+    """SQLAlchemy model for metadata_cache table (Gemini title/tags cache)."""
+
+    __tablename__ = "metadata_cache"
+
+    cache_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    tags: Mapped[Optional[list]] = mapped_column(JSONList, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
