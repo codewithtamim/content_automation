@@ -46,11 +46,11 @@ python scripts/set_webhook.py info
 python scripts/set_webhook.py delete
 ```
 
-## 4. Your current config (.env)
+## 4. Required .env variables
 
-- **URL:** `https://bottom-searches-dna-glasses.trycloudflare.com/webhook`
-- **Secret token:** Stored in `WEBHOOK_SECRET_TOKEN` (validates requests from Telegram)
-- **Port:** 8080 (must match cloudflared `--url`)
+- `WEBHOOK_PUBLIC_URL` — your cloudflared URL + `/webhook` (e.g. `https://xxx.trycloudflare.com/webhook`)
+- `WEBHOOK_SECRET_TOKEN` — random token (generate with `openssl rand -hex 32`)
+- `WEBHOOK_PORT` — 8080 (must match cloudflared `--url`)
 
 ## 5. Order of operations
 
